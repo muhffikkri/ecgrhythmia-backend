@@ -205,6 +205,7 @@ pub struct UpdatePatientProfileRequest {
     pub first_name: String,
     pub last_name: String,
     pub date_of_birth: String,
+    pub gender: Option<String>,
     pub profile_photo: Option<String>,
 }
 
@@ -1176,10 +1177,17 @@ fn update_patient_profile(patient_id: &str, req: UpdatePatientProfileRequest, po
         }
     }
 
-    conn.execute(
-        "UPDATE patients SET first_name = ?1, last_name = ?2, date_of_birth = ?3 WHERE id = ?4",
-        params![req.first_name, req.last_name, req.date_of_birth, patient_id]
-    ).map_err(|e| e.to_string())?;
+    if let Some(gender) = req.gender {
+        conn.execute(
+            "UPDATE patients SET first_name = ?1, last_name = ?2, date_of_birth = ?3, gender = ?4 WHERE id = ?5",
+            params![req.first_name, req.last_name, req.date_of_birth, gender, patient_id]
+        ).map_err(|e| e.to_string())?;
+    } else {
+        conn.execute(
+            "UPDATE patients SET first_name = ?1, last_name = ?2, date_of_birth = ?3 WHERE id = ?4",
+            params![req.first_name, req.last_name, req.date_of_birth, patient_id]
+        ).map_err(|e| e.to_string())?;
+    }
 
     conn.execute(
         "UPDATE accounts SET profile_photo = ?1 WHERE id = ?2",
