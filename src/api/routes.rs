@@ -252,6 +252,16 @@ pub struct FrameRequest {
 }
 
 #[derive(Deserialize)]
+pub struct CreateSessionRequest {
+    pub id: Option<String>,
+    pub patient_id: Option<String>,
+    pub doctor_id: Option<String>,
+    pub device_id: Option<String>,
+    pub started_at: Option<String>,
+    pub dev_note: Option<String>,
+}
+
+#[derive(Deserialize)]
 pub struct FrameSessionRequest {
     pub session_id: String,
 }
@@ -1788,6 +1798,80 @@ pub async fn edit_device_handler(
 }
 
 // AXUM ROUTER GENERATOR
+
+async fn create_session_handler(
+    State(state): State<AppState>,
+    Json(req): Json<CreateSessionRequest>,
+) -> impl IntoResponse {
+    let session_id = req.id.unwrap_or_else(|| format!("session_{}", chrono::Utc::now().timestamp_millis()));
+    let started_at = req.started_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let file_path = format!("records/{}.jsonl", session_id);
+    
+    if let Ok(conn) = state.pool.get() {
+        if let Some(parent) = Path::new(&file_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        
+        let _ = conn.execute(
+            "INSERT INTO sessions (id, patient_id, device_id, doctor_id, started_at, dev_note, file_path) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![session_id, req.patient_id, req.device_id, req.doctor_id, started_at, req.dev_note, file_path]
+        );
+        
+        (StatusCode::CREATED, Json(serde_json::json!({
+            "success": true,
+            "session_id": session_id,
+            "message": "Session created"
+        })))
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "success": false,
+            "message": "Database error"
+        })))
+    }
+}
+
+async fn create_record_handler(
+    State(state): State<AppState>,
+    Json(payload): Json<crate::models::device::DevicePayload>,
+) -> impl IntoResponse {
+    let session_id = payload.session_id.clone();
+    let file_path = format!("records/{}.jsonl", session_id);
+    
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&file_path) {
+        if let Ok(json_string) = serde_json::to_string(&payload) {
+            let _ = writeln!(file, "{}", json_string);
+        }
+        
+        if let Ok(conn) = state.pool.get() {
+            let frame_num = payload.frame_id.replace("frame_", "").parse::<i64>().unwrap_or(1);
+            let start_sec = (frame_num - 1) as f64 * payload.duration_s;
+            let end_sec = frame_num as f64 * payload.duration_s;
+            
+            let format_time = |secs: f64| -> String {
+                let m = (secs / 60.0).floor() as i64;
+                let s = (secs % 60.0).floor() as i64;
+                format!("{:02}:{:02}", m, s)
+            };
+            let time_interval = format!("{} - {}", format_time(start_sec), format_time(end_sec));
+            
+            let _ = conn.execute(
+                "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES (?1, ?2, ?3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
+                params![payload.message_id, session_id, time_interval]
+            );
+        }
+        
+        (StatusCode::CREATED, Json(serde_json::json!({
+            "success": true,
+            "message": "Record appended"
+        })))
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "success": false,
+            "message": "File error"
+        })))
+    }
+}
+
 pub fn create_router(state: AppState) -> Router {
     // Izinkan origin baik yang menggunakan www maupun tanpa www
     let cors = CorsLayer::new()
@@ -1816,7 +1900,7 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/api/auth/register", post(register_handler))
         .route("/api/auth/login", post(login_handler))
-        .route("/api/sessions", get(get_sessions_handler))
+        .route("/api/sessions", get(get_sessions_handler).post(create_session_handler))
         .route("/api/sessions/upload", post(upload_session_handler).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
         .route("/api/sessions/:session_id", put(edit_session_handler).delete(delete_session_handler))
         .route("/api/devices", get(get_devices_handler))
@@ -1833,6 +1917,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/patients/:patient_id/disconnect", post(disconnect_patient_handler))
         .route("/api/doctors/:doctor_id/patients", get(get_doctor_patients_handler))
         .route("/api/doctors/:doctor_id", get(get_doctor_profile_handler).put(update_doctor_profile_handler))
+        .route("/api/records", post(create_record_handler))
         .route("/api/records/:session_id", get(get_record_handler))
         .route("/api/records/:session_id/download", get(download_record_handler))
         .route("/api/devices/:device_id/command", post(device_command_handler))
