@@ -1469,6 +1469,9 @@ async fn upload_session_handler(
         processed_frames += 1;
     }
     
+    // Urutkan berdasarkan frame_id agar penulisannya berurutan secara kronologis
+    payloads.sort_by(|a, b| a.frame_id.cmp(&b.frame_id));
+    
     if let Ok(conn) = state.pool.get() {
         let _ = conn.execute(
             "INSERT OR IGNORE INTO devices (id, name) VALUES (?1, ?1)",
