@@ -12,7 +12,7 @@ use axum::{
     async_trait,
     routing::{get, post, put},
     Router,
-    extract::{Path as AxumPath, State, Query, Json, FromRequestParts, FromRef},
+    extract::{Path as AxumPath, State, Query, Json, FromRequestParts, FromRef, Multipart, DefaultBodyLimit},
     http::{request::Parts, StatusCode, Method, HeaderValue, header},
     response::IntoResponse,
 };
@@ -1155,6 +1155,470 @@ fn read_jsonl_file(session_id: &str) -> String {
     }
 }
 
+// =========================================================================
+// CUSTOM HANDLERS & HELPERS FOR EKG RECORDINGS
+// =========================================================================
+use std::io::Write;
+
+fn parse_csv_samples(csv_content: &str) -> Result<Vec<Vec<f64>>, Box<dyn std::error::Error>> {
+    let mut rdr = csv::ReaderBuilder::new()
+        .has_headers(true)
+        .from_reader(csv_content.as_bytes());
+        
+    let headers = rdr.headers()?.clone();
+    
+    let mut ch1_idx = None;
+    let mut ch2_idx = None;
+    let mut ch3_idx = None;
+    
+    for (i, h) in headers.iter().enumerate() {
+        let h_lower = h.to_lowercase();
+        if h_lower.contains("ch1") || h_lower.contains("lead i") || h_lower.contains("lead_i") || h_lower == "i" {
+            ch1_idx = Some(i);
+        } else if h_lower.contains("ch2") || h_lower.contains("lead ii") || h_lower.contains("lead_ii") || h_lower == "ii" {
+            ch2_idx = Some(i);
+        } else if h_lower.contains("ch3") || h_lower.contains("lead iii") || h_lower.contains("lead_iii") || h_lower == "iii" {
+            ch3_idx = Some(i);
+        }
+    }
+    
+    let ch1_idx = ch1_idx.unwrap_or(if headers.len() >= 4 { 1 } else { 0 });
+    let ch2_idx = ch2_idx.unwrap_or(if headers.len() >= 4 { 2 } else { 1 });
+    let ch3_idx = ch3_idx.unwrap_or(if headers.len() >= 4 { 3 } else { 2 });
+    
+    let mut samples = Vec::new();
+    for result in rdr.records() {
+        let record = result?;
+        let val1 = record.get(ch1_idx).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let val2 = record.get(ch2_idx).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        let val3 = record.get(ch3_idx).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        samples.push(vec![val1, val2, val3]);
+    }
+    
+    Ok(samples)
+}
+
+#[allow(dead_code)]
+#[allow(non_snake_case)]
+#[derive(Deserialize)]
+struct UploadMetadataCal {
+    calibration_source: Option<String>,
+    expected_mV: Option<f64>,
+    method: Option<String>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct UploadMetadataSourceMeta {
+    device_id: Option<String>,
+    session_id: Option<String>,
+    measurement_id: Option<String>,
+    frame_index: Option<i64>,
+    created_at_utc: Option<String>,
+    csv_file: Option<String>,
+    sample_rate_hz: Option<f64>,
+    duration_seconds: Option<f64>,
+}
+
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct UploadMetadata {
+    calibration: Option<UploadMetadataCal>,
+    created_at_utc: Option<String>,
+    duration_seconds: Option<f64>,
+    sample_rate_hz: Option<f64>,
+    source_frame: Option<String>,
+    source_metadata: Option<UploadMetadataSourceMeta>,
+    unit: Option<String>,
+}
+
+async fn upload_session_handler(
+    State(state): State<AppState>,
+    mut multipart: Multipart,
+) -> impl IntoResponse {
+    let mut patient_id: Option<String> = None;
+    let mut custom_session_id: Option<String> = None;
+    let mut custom_device_id: Option<String> = None;
+    
+    let mut json_data: HashMap<String, String> = HashMap::new();
+    let mut csv_data: HashMap<String, String> = HashMap::new();
+    
+    while let Ok(Some(field)) = multipart.next_field().await {
+        let name = field.name().unwrap_or_default().to_string();
+        if name == "patient_id" {
+            if let Ok(val) = field.text().await {
+                if !val.trim().is_empty() {
+                    patient_id = Some(val.trim().to_string());
+                }
+            }
+        } else if name == "session_id" {
+            if let Ok(val) = field.text().await {
+                if !val.trim().is_empty() {
+                    custom_session_id = Some(val.trim().to_string());
+                }
+            }
+        } else if name == "device_id" {
+            if let Ok(val) = field.text().await {
+                if !val.trim().is_empty() {
+                    custom_device_id = Some(val.trim().to_string());
+                }
+            }
+        } else {
+            let file_name = field.file_name().unwrap_or_default().to_string();
+            let file_stem = Path::new(&file_name)
+                .file_stem()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_string();
+                
+            if file_name.ends_with(".json") {
+                if let Ok(bytes) = field.bytes().await {
+                    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                        json_data.insert(file_stem, text);
+                    }
+                }
+            } else if file_name.ends_with(".csv") {
+                if let Ok(bytes) = field.bytes().await {
+                    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                        csv_data.insert(file_stem, text);
+                    }
+                }
+            }
+        }
+    }
+    
+    if json_data.is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+            "success": false,
+            "message": "Tidak ada file metadata .json yang diunggah"
+        })));
+    }
+    
+    let mut processed_frames = 0;
+    let mut resolved_session_id = String::new();
+    let mut resolved_device_id = String::new();
+    let mut created_at_utc = String::new();
+    let mut payloads: Vec<crate::models::device::DevicePayload> = Vec::new();
+    
+    for (stem, json_str) in &json_data {
+        let metadata: UploadMetadata = match serde_json::from_str(json_str) {
+            Ok(v) => v,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Gagal mem-parsing metadata JSON {}: {}", stem, e)
+                })));
+            }
+        };
+        
+        let csv_content = csv_data.get(stem)
+            .or_else(|| {
+                let csv_filename = metadata.source_metadata.as_ref()
+                    .and_then(|m| m.csv_file.as_ref())
+                    .map(|s| s.as_str())
+                    .unwrap_or_default();
+                let csv_stem = Path::new(csv_filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
+                csv_data.get(&csv_stem)
+            });
+            
+        let csv_str = match csv_content {
+            Some(c) => c,
+            None => {
+                if csv_data.len() == 1 && json_data.len() == 1 {
+                    csv_data.values().next().unwrap()
+                } else {
+                    return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                        "success": false,
+                        "message": format!("File CSV pendamping untuk {} tidak ditemukan", stem)
+                    })));
+                }
+            }
+        };
+        
+        let ecg_samples = match parse_csv_samples(csv_str) {
+            Ok(s) => s,
+            Err(e) => {
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "success": false,
+                    "message": format!("Gagal membaca sampel CSV {}: {}", stem, e)
+                })));
+            }
+        };
+        
+        let file_session_id = metadata.source_metadata.as_ref()
+            .and_then(|m| m.session_id.as_ref())
+            .map(|s| s.clone())
+            .unwrap_or_else(|| "session_uploaded".to_string());
+            
+        let file_device_id = metadata.source_metadata.as_ref()
+            .and_then(|m| m.device_id.as_ref())
+            .map(|s| s.clone())
+            .unwrap_or_else(|| "device01".to_string());
+            
+        if resolved_session_id.is_empty() {
+            resolved_session_id = custom_session_id.clone().unwrap_or(file_session_id);
+        }
+        if resolved_device_id.is_empty() {
+            resolved_device_id = custom_device_id.clone().unwrap_or(file_device_id);
+        }
+        if created_at_utc.is_empty() {
+            created_at_utc = metadata.created_at_utc.clone()
+                .or_else(|| metadata.source_metadata.as_ref().and_then(|m| m.created_at_utc.clone()))
+                .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        }
+        
+        let frame_id = metadata.source_frame.clone()
+            .or_else(|| metadata.source_metadata.as_ref().and_then(|m| m.frame_index.map(|idx| format!("{:06}", idx))))
+            .unwrap_or_else(|| "000001".to_string());
+            
+        let measurement_id = metadata.source_metadata.as_ref()
+            .and_then(|m| m.measurement_id.clone())
+            .unwrap_or_else(|| format!("{}_{}", resolved_session_id, frame_id));
+            
+        let sample_rate = metadata.sample_rate_hz
+            .or_else(|| metadata.source_metadata.as_ref().and_then(|m| m.sample_rate_hz))
+            .unwrap_or(250.0);
+            
+        let duration = metadata.duration_seconds
+            .or_else(|| metadata.source_metadata.as_ref().and_then(|m| m.duration_seconds))
+            .unwrap_or(10.0);
+            
+        let payload = crate::models::device::DevicePayload {
+            message_id: measurement_id,
+            device_id: resolved_device_id.clone(),
+            session_id: resolved_session_id.clone(),
+            frame_id,
+            created_at: created_at_utc.clone(),
+            sampling_rate_hz: sample_rate,
+            duration_s: duration,
+            validation: crate::models::device::DeviceValidation {
+                status: "PASS".to_string(),
+                warnings: vec![],
+            },
+            ecg: crate::models::device::DeviceEcg {
+                format: "samples_by_time".to_string(),
+                samples: ecg_samples,
+            },
+            prediction: crate::models::device::DevicePrediction {
+                status: "PASS".to_string(),
+                label: "Normal".to_string(),
+                confidence_percent: 100.0,
+                probabilities: None,
+                threshold: None,
+                latency_ms: None,
+                runtime: None,
+            },
+            system: None,
+            stress_test: None,
+            network: None,
+        };
+        
+        payloads.push(payload);
+        processed_frames += 1;
+    }
+    
+    if let Ok(conn) = state.pool.get() {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO devices (id, name) VALUES (?1, ?1)",
+            params![resolved_device_id]
+        );
+        
+        let file_path = format!("records/{}.jsonl", resolved_session_id);
+        
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![resolved_session_id, resolved_device_id, patient_id, created_at_utc, file_path]
+        );
+        
+        if let Some(parent) = Path::new(&file_path).parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        
+        if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&file_path) {
+            for payload in payloads {
+                if let Ok(json_string) = serde_json::to_string(&payload) {
+                    let _ = writeln!(file, "{}", json_string);
+                }
+                
+                let frame_num = payload.frame_id.replace("frame_", "").parse::<i64>().unwrap_or(1);
+                let start_sec = (frame_num - 1) as f64 * payload.duration_s;
+                let end_sec = frame_num as f64 * payload.duration_s;
+                
+                let format_time = |secs: f64| -> String {
+                    let m = (secs / 60.0).floor() as i64;
+                    let s = (secs % 60.0).floor() as i64;
+                    format!("{:02}:{:02}", m, s)
+                };
+                let time_interval = format!("{} - {}", format_time(start_sec), format_time(end_sec));
+                let frame_db_id = format!("fra{}{:06}", resolved_session_id.replace("session_", "").replace("ses_", ""), frame_num);
+                
+                let _ = conn.execute(
+                    "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES (?1, ?2, ?3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
+                    params![frame_db_id, resolved_session_id, time_interval]
+                );
+            }
+        }
+        
+        (StatusCode::OK, Json(serde_json::json!({
+            "success": true,
+            "message": format!("Berhasil mengimpor {} frame ke sesi {}", processed_frames, resolved_session_id),
+            "session_id": resolved_session_id
+        })))
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({
+            "success": false,
+            "message": "Database error"
+        })))
+    }
+}
+
+async fn download_record_handler(
+    AxumPath(session_id): AxumPath<String>,
+) -> impl IntoResponse {
+    let file_path = format!("records/{}.jsonl", session_id);
+    if let Ok(contents) = fs::read_to_string(&file_path) {
+        axum::response::Response::builder()
+            .header("Content-Type", "application/json")
+            .header("Content-Disposition", format!("attachment; filename=\"{}.jsonl\"", session_id))
+            .body(axum::body::Body::from(contents))
+            .unwrap()
+    } else {
+        axum::response::Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(axum::body::Body::from("Record file not found"))
+            .unwrap()
+    }
+}
+
+async fn delete_session_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Ok(conn) = state.pool.get() {
+        let _ = conn.execute("DELETE FROM frame_records WHERE session_id = ?1", params![session_id]);
+        match conn.execute("DELETE FROM sessions WHERE id = ?1", params![session_id]) {
+            Ok(rows) if rows > 0 => {
+                let file_path = format!("records/{}.jsonl", session_id);
+                let _ = fs::remove_file(file_path);
+                (StatusCode::OK, Json(serde_json::json!({"success": true, "message": "Sesi berhasil dihapus"})))
+            }
+            Ok(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"success": false, "message": "Sesi tidak ditemukan"}))),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": e.to_string()}))),
+        }
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": "Database error"})))
+    }
+}
+
+#[derive(Deserialize)]
+struct EditSessionRequest {
+    patient_id: Option<String>,
+    device_id: Option<String>,
+    ended_at: Option<String>,
+}
+
+async fn edit_session_handler(
+    State(state): State<AppState>,
+    AxumPath(session_id): AxumPath<String>,
+    Json(req): Json<EditSessionRequest>,
+) -> impl IntoResponse {
+    if let Ok(conn) = state.pool.get() {
+        let mut query = "UPDATE sessions SET ".to_string();
+        let mut params_vec: Vec<String> = Vec::new();
+        
+        if let Some(ref pid) = req.patient_id {
+            query.push_str("patient_id = ?, ");
+            params_vec.push(pid.clone());
+        }
+        
+        if let Some(ref did) = req.device_id {
+            query.push_str("device_id = ?, ");
+            params_vec.push(did.clone());
+        }
+        
+        if let Some(ref ended) = req.ended_at {
+            query.push_str("ended_at = ?, ");
+            params_vec.push(ended.clone());
+        }
+        
+        if params_vec.is_empty() {
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"success": false, "message": "Tidak ada data yang diubah"})));
+        }
+        
+        query.truncate(query.len() - 2);
+        query.push_str(" WHERE id = ?");
+        params_vec.push(session_id.clone());
+        
+        let mut stmt = conn.prepare(&query).unwrap();
+        let params_sql = rusqlite::params_from_iter(params_vec.iter());
+        
+        match stmt.execute(params_sql) {
+            Ok(rows) if rows > 0 => (StatusCode::OK, Json(serde_json::json!({"success": true, "message": "Sesi berhasil diupdate"}))),
+            Ok(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"success": false, "message": "Sesi tidak ditemukan"}))),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": e.to_string()}))),
+        }
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": "Database error"})))
+    }
+}
+
+#[derive(Deserialize)]
+struct AddPatientRequest {
+    first_name: String,
+    last_name: String,
+    date_of_birth: String,
+    gender: String,
+    device_id: Option<String>,
+}
+
+async fn add_patient_handler(
+    State(state): State<AppState>,
+    Json(req): Json<AddPatientRequest>,
+) -> impl IntoResponse {
+    if let Ok(conn) = state.pool.get() {
+        let new_id = crate::db::sqlite::generate_custom_id(&conn, "patients", "pat");
+        
+        let res = conn.execute(
+            "INSERT INTO patients (id, first_name, last_name, date_of_birth, gender, device_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![new_id, req.first_name, req.last_name, req.date_of_birth, req.gender, req.device_id]
+        );
+        
+        match res {
+            Ok(_) => (StatusCode::OK, Json(serde_json::json!({"success": true, "message": "Pasien berhasil ditambahkan", "id": new_id}))),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": e.to_string()}))),
+        }
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": "Database error"})))
+    }
+}
+
+async fn delete_patient_handler(
+    State(state): State<AppState>,
+    AxumPath(patient_id): AxumPath<String>,
+) -> impl IntoResponse {
+    if let Ok(conn) = state.pool.get() {
+        let mut stmt = conn.prepare("SELECT id FROM sessions WHERE patient_id = ?1").unwrap();
+        let sessions_iter = stmt.query_map(params![patient_id], |row| row.get::<_, String>(0)).unwrap();
+        
+        for ses_id in sessions_iter {
+            if let Ok(sid) = ses_id {
+                let _ = conn.execute("DELETE FROM frame_records WHERE session_id = ?1", params![sid]);
+                let _ = conn.execute("DELETE FROM sessions WHERE id = ?1", params![sid]);
+                let file_path = format!("records/{}.jsonl", sid);
+                let _ = fs::remove_file(file_path);
+            }
+        }
+        
+        match conn.execute("DELETE FROM patients WHERE id = ?1", params![patient_id]) {
+            Ok(rows) if rows > 0 => (StatusCode::OK, Json(serde_json::json!({"success": true, "message": "Pasien berhasil dihapus"}))),
+            Ok(_) => (StatusCode::NOT_FOUND, Json(serde_json::json!({"success": false, "message": "Pasien tidak ditemukan"}))),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": e.to_string()}))),
+        }
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": "Database error"})))
+    }
+}
+
 #[derive(Deserialize)]
 pub struct NewDeviceReq {
     pub name: String,
@@ -1298,20 +1762,23 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/auth/register", post(register_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/sessions", get(get_sessions_handler))
+        .route("/api/sessions/upload", post(upload_session_handler).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
+        .route("/api/sessions/:session_id", put(edit_session_handler).delete(delete_session_handler))
         .route("/api/devices", get(get_devices_handler))
         .route("/api/admin/stats", get(get_admin_stats_handler))
         .route("/api/admin/users", get(get_admin_users_handler))
         .route("/api/admin/impersonate/:target_id", post(impersonate_handler))
         .route("/api/admin/devices", get(get_devices_handler).post(add_device_handler))
         .route("/api/admin/devices/:id", put(edit_device_handler))
-        .route("/api/patients", get(get_patients_handler))
+        .route("/api/patients", get(get_patients_handler).post(add_patient_handler))
         .route("/api/patients/:patient_id/sessions", get(get_patient_sessions_handler))
-        .route("/api/patients/:patient_id", get(get_patient_profile_handler).put(update_patient_profile_handler))
+        .route("/api/patients/:patient_id", get(get_patient_profile_handler).put(update_patient_profile_handler).delete(delete_patient_handler))
         .route("/api/patients/:patient_id/connect", post(connect_patient_handler))
         .route("/api/patients/:patient_id/disconnect", post(disconnect_patient_handler))
         .route("/api/doctors/:doctor_id/patients", get(get_doctor_patients_handler))
         .route("/api/doctors/:doctor_id", get(get_doctor_profile_handler).put(update_doctor_profile_handler))
         .route("/api/records/:session_id", get(get_record_handler))
+        .route("/api/records/:session_id/download", get(download_record_handler))
         .route("/api/devices/:device_id/command", post(device_command_handler))
         .route("/api/devices/:device_id/assign", post(assign_device_handler))
         .route("/api/sessions/:session_id/confirmation", post(session_confirmation_handler))
