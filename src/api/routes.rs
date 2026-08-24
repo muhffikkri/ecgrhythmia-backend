@@ -345,9 +345,22 @@ async fn get_admin_stats_handler(
 async fn get_admin_users_handler(
     _claims: AdminClaims,
     State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-    let users = get_admin_users(&state.pool);
-    Json(users)
+    let role_filter = params.get("role").cloned();
+    let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
+    let limit: usize = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100);
+    let (users, total) = get_admin_users_filtered(&state.pool, role_filter, page, limit);
+    let total_pages = if limit > 0 { (total + limit - 1) / limit } else { 1 };
+    Json(serde_json::json!({
+        "data": users,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages
+        }
+    }))
 }
 
 async fn admin_sync_handler(
@@ -964,21 +977,30 @@ fn get_admin_stats(pool: &DbPool) -> AdminStats {
     stats
 }
 
-fn get_admin_users(pool: &DbPool) -> Vec<AdminUser> {
+fn get_admin_users_filtered(pool: &DbPool, role_filter: Option<String>, page: usize, limit: usize) -> (Vec<AdminUser>, usize) {
     let mut users = Vec::new();
+    let mut total = 0usize;
     if let Ok(conn) = pool.get() {
-        let query = "
-            SELECT p.id, p.first_name || ' ' || p.last_name, a.role, IFNULL(a.status, 'Offline'), a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo
-            FROM patients p
-            JOIN accounts a ON p.account_id = a.id
-            UNION ALL
-            SELECT d.id, d.first_name || ' ' || d.last_name, a.role, IFNULL(a.status, 'Offline'), a.created_at, NULL, NULL, a.profile_photo
-            FROM doctors d
-            JOIN accounts a ON d.account_id = a.id
-            ORDER BY created_at DESC
-        ";
-        if let Ok(mut stmt) = conn.prepare(query) {
-            if let Ok(user_iter) = stmt.query_map([], |row| {
+        let (count_query, data_query) = match role_filter.as_deref() {
+            Some("pasien") => (
+                "SELECT COUNT(*) FROM patients p JOIN accounts a ON p.account_id = a.id",
+                "SELECT p.id, p.first_name || ' ' || p.last_name AS name, a.role, IFNULL(a.status, 'Offline'), a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo FROM patients p JOIN accounts a ON p.account_id = a.id ORDER BY a.created_at DESC LIMIT ?1 OFFSET ?2"
+            ),
+            Some("dokter") => (
+                "SELECT COUNT(*) FROM doctors d JOIN accounts a ON d.account_id = a.id",
+                "SELECT d.id, d.first_name || ' ' || d.last_name AS name, a.role, IFNULL(a.status, 'Offline'), a.created_at, NULL, NULL, a.profile_photo FROM doctors d JOIN accounts a ON d.account_id = a.id ORDER BY a.created_at DESC LIMIT ?1 OFFSET ?2"
+            ),
+            _ => (
+                "SELECT COUNT(*) FROM (SELECT p.id FROM patients p JOIN accounts a ON p.account_id = a.id UNION ALL SELECT d.id FROM doctors d JOIN accounts a ON d.account_id = a.id)",
+                "SELECT p.id, p.first_name || ' ' || p.last_name AS name, a.role, IFNULL(a.status, 'Offline'), a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo FROM patients p JOIN accounts a ON p.account_id = a.id UNION ALL SELECT d.id, d.first_name || ' ' || d.last_name AS name, a.role, IFNULL(a.status, 'Offline'), a.created_at, NULL, NULL, a.profile_photo FROM doctors d JOIN accounts a ON d.account_id = a.id ORDER BY created_at DESC LIMIT ?1 OFFSET ?2"
+            ),
+        };
+        if let Ok(n) = conn.query_row(count_query, [], |row| row.get::<_, i64>(0)) {
+            total = n as usize;
+        }
+        let offset = (page.saturating_sub(1)) * limit;
+        if let Ok(mut stmt) = conn.prepare(data_query) {
+            if let Ok(user_iter) = stmt.query_map(rusqlite::params![limit as i64, offset as i64], |row| {
                 Ok(AdminUser {
                     id: row.get(0)?,
                     name: row.get(1)?,
@@ -998,7 +1020,7 @@ fn get_admin_users(pool: &DbPool) -> Vec<AdminUser> {
             }
         }
     }
-    users
+    (users, total)
 }
 
 fn get_patient_profile(patient_id: String, pool: &DbPool) -> Option<PatientProfileResponse> {
