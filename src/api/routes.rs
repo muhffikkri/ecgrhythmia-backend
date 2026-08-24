@@ -350,6 +350,28 @@ async fn get_admin_users_handler(
     Json(users)
 }
 
+async fn admin_sync_handler(
+    _claims: AdminClaims,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
+    match crate::db::sync::sync_databases(&state.pool) {
+        Ok(count) => (
+            StatusCode::OK,
+            Json(serde_json::json!({
+                "success": true,
+                "message": format!("Sinkronisasi dua arah berhasil dilakukan. Total record diproses: {}", count)
+            }))
+        ),
+        Err(e) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "success": false,
+                "message": format!("Gagal sinkronisasi: {}", e)
+            }))
+        )
+    }
+}
+
 async fn impersonate_handler(
     _claims: AdminClaims,
     State(state): State<AppState>,
@@ -1767,6 +1789,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/devices", get(get_devices_handler))
         .route("/api/admin/stats", get(get_admin_stats_handler))
         .route("/api/admin/users", get(get_admin_users_handler))
+        .route("/api/admin/sync", post(admin_sync_handler))
         .route("/api/admin/impersonate/:target_id", post(impersonate_handler))
         .route("/api/admin/devices", get(get_devices_handler).post(add_device_handler))
         .route("/api/admin/devices/:id", put(edit_device_handler))

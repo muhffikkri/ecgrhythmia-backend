@@ -31,6 +31,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 r2d2 = "0.8"
 r2d2_sqlite = { version = "0.22", features = ["bundled-sqlcipher"] }
 futures-util = "0.3"
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+native-tls = "0.2"
+postgres-native-tls = "0.5"
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

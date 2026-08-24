@@ -107,6 +107,22 @@ async fn main() {
         .route("/", axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()))
         .route("/ws", axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()));
 
+    // 8.5. Jalankan Loop Sinkronisasi Latar Belakang (Setiap 10 Jam)
+    let pool_clone = pool.clone();
+    tokio::spawn(async move {
+        info!("[Background Sync] Loop sinkronisasi database asinkron berjalan...");
+        loop {
+            // Tunggu 10 jam di awal loop atau setelah sinkronisasi selesai?
+            // Biasanya jalankan sinkronisasi pertama kali setelah 10 jam atau langsung jalankan sekali pada saat startup.
+            // Jalankan sekali pada saat startup, lalu tunggu 10 jam.
+            match db::sync::sync_databases(&pool_clone) {
+                Ok(count) => info!("[Background Sync] Berhasil melakukan sinkronisasi database. Terproses: {} data.", count),
+                Err(e) => info!("[Background Sync] Sinkronisasi otomatis dilewati/gagal: {}", e),
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(10 * 3600)).await;
+        }
+    });
+
     // 9. Jalankan Server HTTP & WebSocket
     let addr_ws = format!("{}:{}", config.host_ip, config.ws_port);
     let addr_rest = format!("{}:{}", config.host_ip, config.rest_port);

@@ -463,3 +463,12 @@ async fn test_ekg_session_upload() {
     let _ = std::fs::remove_file("records/session_upload_test.jsonl");
     let _ = std::fs::remove_dir("records");
 }
+
+#[tokio::test]
+async fn test_db_sync_not_configured() {
+    let (state, _pacer_rx, _db_rx) = setup_test_state();
+    std::env::remove_var("DATABASE_URL");
+    let result = ecg_backend::db::sync::sync_databases(&state.pool);
+    assert!(result.is_err());
+    assert_eq!(result.unwrap_err(), "DATABASE_URL tidak diatur di file .env");
+}
