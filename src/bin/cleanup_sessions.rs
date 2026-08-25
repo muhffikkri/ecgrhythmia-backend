@@ -1,10 +1,14 @@
-/// cleanup_sessions: Perbaiki sesi di database yang tidak memiliki patient_id.
+/// cleanup_sessions: Laporan dan perbaikan sesi tanpa patient_id di database.
 /// 
+/// Filosofi:
+/// - Database adalah sumber kebenaran untuk hubungan pasien-sesi
+/// - JSONL adalah arsip data sinyal (tidak wajib menyimpan patient_id)
+/// - patient_id harus berasal dari form saat upload, bukan dari file JSONL
+///
 /// Tool ini akan:
-/// 1. Mencari semua sessions dengan patient_id = NULL di database
-/// 2. Membaca file JSONL yang terkait untuk mencari patient_id yang tersimpan di dalamnya
-/// 3. Jika ditemukan, update session di database
-/// 4. Jika tidak, tampilkan daftar sesi yang perlu diperbaiki secara manual
+/// 1. Tampilkan semua sesi tanpa patient_id di database (perlu perbaikan manual)
+/// 2. Coba pulihkan dari JSONL HANYA untuk file baru yang memang menyimpannya
+/// 3. Untuk file lama: tampilkan perintah SQL yang bisa dijalankan admin
 
 use ecg_backend::{config, db};
 use rusqlite::params;
@@ -13,7 +17,11 @@ use std::io::{BufRead, BufReader};
 use std::process::exit;
 
 fn main() {
-    println!("=== cleanup_sessions: Membersihkan sesi tanpa pasien di database ===\n");
+    println!("=================================================================");
+    println!("  cleanup_sessions: Audit & Perbaikan Sesi Tanpa Pasien          ");
+    println!("  Filosofi: database adalah sumber kebenaran, bukan file JSONL   ");
+    println!("=================================================================\n");
+
     let app_config = config::AppConfig::load();
     let pool = db::sqlite::create_pool(&app_config.db_path, &app_config.sqlite_key);
 
@@ -25,106 +33,111 @@ fn main() {
         }
     };
 
-    // Tampilkan semua session dengan patient_id NULL
-    println!("--- Sesi tanpa pasien (patient_id = NULL) ---");
-    {
+    // === 1. Temukan semua sesi tanpa patient_id ===
+    let null_sessions: Vec<(String, String, String, String)> = {
         let mut stmt = conn.prepare(
             "SELECT id, device_id, started_at, file_path FROM sessions WHERE patient_id IS NULL ORDER BY started_at DESC"
         ).unwrap();
-
-        let null_sessions: Vec<(String, String, String, String)> = stmt.query_map([], |row| {
+        stmt.query_map([], |row| {
             Ok((
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
                 row.get::<_, String>(3)?,
             ))
-        }).unwrap().filter_map(|r| r.ok()).collect();
+        }).unwrap().filter_map(|r| r.ok()).collect()
+    };
 
-        if null_sessions.is_empty() {
-            println!("[OK] Tidak ada sesi tanpa pasien di database!\n");
-        } else {
-            println!("Ditemukan {} sesi tanpa pasien:\n", null_sessions.len());
-            for (session_id, device_id, started_at, file_path) in &null_sessions {
-                println!("  {} | device={} | started={} | file={}", session_id, device_id, started_at, file_path);
-            }
+    if null_sessions.is_empty() {
+        println!("[OK] Tidak ada sesi tanpa pasien di database. Semua data bersih!\n");
+    } else {
+        println!("[!] Ditemukan {} sesi tanpa patient_id:\n", null_sessions.len());
+        for (session_id, device_id, started_at, file_path) in &null_sessions {
+            println!("  {} | device={} | started={} | file={}", session_id, device_id, started_at, file_path);
         }
+    }
 
-        println!("\n--- Mencoba memulihkan patient_id dari file JSONL ---");
-        let mut recovered = 0;
-        let mut manual_fix_needed = vec![];
+    // === 2. Coba pulihkan dari JSONL (hanya untuk file baru yang menyimpan patient_id) ===
+    let mut recovered = 0;
+    let mut manual_needed: Vec<(String, String)> = vec![];
 
-        for (session_id, _device_id, _started_at, file_path) in &null_sessions {
-            let patient_from_file = read_patient_id_from_jsonl(file_path);
+    println!("\n--- Mencoba pemulihan otomatis dari JSONL (hanya file baru) ---");
+    for (session_id, _device_id, started_at, file_path) in &null_sessions {
+        let patient_from_jsonl = read_patient_id_from_jsonl(file_path);
 
-            match patient_from_file {
-                Some(pid) => {
-                    // Verifikasi bahwa pasien ada di DB
-                    let patient_exists: bool = conn.query_row(
-                        "SELECT EXISTS(SELECT 1 FROM patients WHERE id = ?1)",
-                        params![pid],
-                        |row| row.get(0),
-                    ).unwrap_or(false);
+        match patient_from_jsonl {
+            Some(pid) => {
+                // Verifikasi pasien ada di DB
+                let patient_exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM patients WHERE id = ?1)",
+                    params![pid],
+                    |row| row.get(0),
+                ).unwrap_or(false);
 
-                    if patient_exists {
-                        match conn.execute(
-                            "UPDATE sessions SET patient_id = ?1 WHERE id = ?2",
-                            params![pid, session_id],
-                        ) {
-                            Ok(_) => {
-                                println!("[FIXED]  {} -> patient_id diset ke '{}'", session_id, pid);
-                                recovered += 1;
-                            }
-                            Err(e) => eprintln!("[ERROR]  Gagal update {}: {:?}", session_id, e),
+                if patient_exists {
+                    match conn.execute(
+                        "UPDATE sessions SET patient_id = ?1 WHERE id = ?2",
+                        params![pid, session_id],
+                    ) {
+                        Ok(_) => {
+                            println!("[PULIH]  {} -> patient_id = '{}'", session_id, pid);
+                            recovered += 1;
                         }
-                    } else {
-                        println!("[WARN]   {} -> patient_id '{}' dari JSONL tidak ada di tabel patients", session_id, pid);
-                        manual_fix_needed.push((session_id.clone(), Some(pid)));
+                        Err(e) => {
+                            eprintln!("[ERROR]  Gagal update {}: {:?}", session_id, e);
+                            manual_needed.push((session_id.clone(), started_at.clone()));
+                        }
                     }
-                }
-                None => {
-                    println!("[SKIP]   {} -> tidak ada patient_id di file JSONL (file lama sebelum perbaikan)", session_id);
-                    manual_fix_needed.push((session_id.clone(), None));
+                } else {
+                    println!("[WARN]   {} -> patient '{}' ada di JSONL tapi tidak ada di tabel patients", session_id, pid);
+                    manual_needed.push((session_id.clone(), started_at.clone()));
                 }
             }
-        }
-
-        println!("\n=== Ringkasan ===");
-        println!("Dipulihkan otomatis : {}", recovered);
-        println!("Perlu perbaikan manual: {}", manual_fix_needed.len());
-
-        if !manual_fix_needed.is_empty() {
-            println!("\n--- Sesi yang perlu diperbaiki manual (gunakan perintah di bawah) ---");
-            for (sid, _) in &manual_fix_needed {
-                println!(
-                    "  UPDATE sessions SET patient_id = '<ID_PASIEN>' WHERE id = '{}';",
-                    sid
-                );
+            None => {
+                // File lama - tidak ada patient_id di JSONL, perlu perbaikan manual
+                manual_needed.push((session_id.clone(), started_at.clone()));
             }
         }
     }
 
-    // Tampilkan 10 sesi terbaru untuk verifikasi
-    println!("\n--- 10 Sesi Terbaru Setelah Pembersihan ---");
+    // === 3. Tampilkan laporan akhir ===
+    println!("\n=== RINGKASAN ===");
+    println!("Total sesi tanpa pasien : {}", null_sessions.len());
+    println!("Dipulihkan otomatis     : {}", recovered);
+    println!("Perlu perbaikan manual  : {}", manual_needed.len());
+
+    if !manual_needed.is_empty() {
+        println!("\n--- Perintah SQL untuk perbaikan manual ---");
+        println!("Jalankan di database untuk mengaitkan sesi ke pasien yang tepat:");
+        println!("(Ganti <PATIENT_ID> dengan ID pasien yang sesuai, contoh: pat000000000030)\n");
+        for (sid, started_at) in &manual_needed {
+            println!("  -- Sesi: {} (waktu: {})", sid, started_at);
+            println!("  UPDATE sessions SET patient_id = '<PATIENT_ID>' WHERE id = '{}';", sid);
+            println!();
+        }
+        println!("Lihat daftar pasien yang tersedia:");
+        println!("  SELECT id, first_name, last_name FROM patients ORDER BY id;");
+    }
+
+    // === 4. Tampilkan status akhir DB ===
+    println!("\n--- 10 Sesi Terbaru di Database (setelah pembersihan) ---");
     {
         let mut stmt = conn.prepare(
-            "SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 10"
+            "SELECT s.id, p.first_name, p.last_name, s.started_at FROM sessions s LEFT JOIN patients p ON s.patient_id = p.id ORDER BY s.started_at DESC LIMIT 10"
         ).unwrap();
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
-            let patient_id: Option<String> = row.get(1)?;
-            let started_at: String = row.get(2)?;
-            let file_path: String = row.get(3)?;
-            Ok(format!(
-                "{} | Pasien: {} | Mulai: {} | File: {}",
-                id,
-                patient_id.unwrap_or_else(|| "NULL".to_string()),
-                started_at,
-                file_path
-            ))
+            let fname: Option<String> = row.get(1)?;
+            let lname: Option<String> = row.get(2)?;
+            let started_at: String = row.get(3)?;
+            let patient_name = match (fname, lname) {
+                (Some(f), Some(l)) => format!("{} {}", f, l),
+                _ => "!!! TANPA PASIEN !!!".to_string(),
+            };
+            Ok(format!("{} | {} | {}", id, patient_name, started_at))
         }).unwrap();
         for row in rows {
-            println!("{}", row.unwrap());
+            println!("  {}", row.unwrap());
         }
     }
 }
