@@ -42,3 +42,4 @@ Cargo.lock
 .DS_Store
 
 /openssl-custom/
+upload_example
