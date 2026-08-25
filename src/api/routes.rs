@@ -1295,7 +1295,7 @@ struct UploadMetadata {
 }
 
 #[allow(dead_code)]
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 struct UploadPredictionMetadata {
     prediction: Option<String>,
     confidence_percent: Option<f64>,
@@ -1303,6 +1303,8 @@ struct UploadPredictionMetadata {
     threshold: Option<f64>,
     latency_ms: Option<f64>,
     runtime: Option<String>,
+    input_validation_status: Option<String>,
+    input_warnings: Option<Vec<String>>,
 }
 
 async fn upload_session_handler(
@@ -1439,7 +1441,7 @@ async fn upload_session_handler(
             
         if resolved_session_id.is_empty() {
             let temp_id = custom_session_id.clone().unwrap_or(file_session_id);
-            if temp_id.starts_with("ses") && temp_id.len() >= 15 {
+            if temp_id.starts_with("ses") && temp_id.len() == 15 {
                 resolved_session_id = temp_id;
             } else {
                 if let Ok(conn) = state.pool.get() {
@@ -1479,7 +1481,7 @@ async fn upload_session_handler(
             serde_json::from_str::<UploadPredictionMetadata>(p_str).ok()
         });
 
-        let prediction = if let Some(p) = prediction_obj {
+        let prediction = if let Some(p) = prediction_obj.clone() {
             crate::models::device::DevicePrediction {
                 status: "PASS".to_string(),
                 label: p.prediction.unwrap_or_else(|| "Normal".to_string()),
@@ -1515,8 +1517,8 @@ async fn upload_session_handler(
             sampling_rate_hz: sample_rate,
             duration_s: duration,
             validation: crate::models::device::DeviceValidation {
-                status: "PASS".to_string(),
-                warnings: vec![],
+                status: prediction_obj.as_ref().and_then(|p| p.input_validation_status.clone()).unwrap_or_else(|| "PASS".to_string()),
+                warnings: prediction_obj.as_ref().and_then(|p| p.input_warnings.clone()).unwrap_or_else(|| vec![]),
             },
             ecg: crate::models::device::DeviceEcg {
                 format: "samples_by_time".to_string(),
@@ -1857,7 +1859,7 @@ async fn create_session_handler(
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
     let session_id = if let Some(id) = req.id {
-        if id.starts_with("ses") && id.len() >= 15 {
+        if id.starts_with("ses") && id.len() == 15 {
             id
         } else {
             if let Ok(conn) = state.pool.get() {
