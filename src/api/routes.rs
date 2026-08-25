@@ -1312,7 +1312,6 @@ async fn upload_session_handler(
     mut multipart: Multipart,
 ) -> impl IntoResponse {
     let mut patient_id: Option<String> = None;
-    let mut custom_session_id: Option<String> = None;
     let mut custom_device_id: Option<String> = None;
     
     let mut json_data: HashMap<String, String> = HashMap::new();
@@ -1329,12 +1328,6 @@ async fn upload_session_handler(
                     tracing::info!("Received patient_id: {}", trimmed);
                 } else {
                     tracing::info!("Received empty/null patient_id");
-                }
-            }
-        } else if name == "session_id" {
-            if let Ok(val) = field.text().await {
-                if !val.trim().is_empty() {
-                    custom_session_id = Some(val.trim().to_string());
                 }
             }
         } else if name == "device_id" {
@@ -1433,11 +1426,6 @@ async fn upload_session_handler(
             }
         };
         
-        let file_session_id = metadata.source_metadata.as_ref()
-            .and_then(|m| m.session_id.as_ref())
-            .map(|s| s.clone())
-            .unwrap_or_else(|| "session_uploaded".to_string());
-            
         let file_device_id = metadata.source_metadata.as_ref()
             .and_then(|m| m.device_id.as_ref())
             .map(|s| s.clone())
