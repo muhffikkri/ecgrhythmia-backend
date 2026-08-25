@@ -1326,6 +1326,9 @@ async fn upload_session_handler(
                 let trimmed = val.trim();
                 if !trimmed.is_empty() && trimmed != "null" && trimmed != "undefined" {
                     patient_id = Some(trimmed.to_string());
+                    tracing::info!("Received patient_id: {}", trimmed);
+                } else {
+                    tracing::info!("Received empty/null patient_id");
                 }
             }
         } else if name == "session_id" {
@@ -1443,8 +1446,10 @@ async fn upload_session_handler(
         if resolved_session_id.is_empty() {
             if let Ok(conn) = state.pool.get() {
                 resolved_session_id = crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses");
+                tracing::info!("Generated new custom session_id: {}", resolved_session_id);
             } else {
                 resolved_session_id = format!("ses_{}", chrono::Utc::now().timestamp_millis());
+                tracing::warn!("Failed to get DB connection, fallback session_id: {}", resolved_session_id);
             }
         }
         if resolved_device_id.is_empty() {
@@ -1538,7 +1543,9 @@ async fn upload_session_handler(
             "INSERT OR IGNORE INTO devices (id, name) VALUES (?1, ?1)",
             params![resolved_device_id]
         ) {
-            tracing::error!("Failed to insert device: {}", e);
+            tracing::error!("Failed to insert device {}: {}", resolved_device_id, e);
+        } else {
+            tracing::info!("Ensured device {} exists in database", resolved_device_id);
         }
         
         let file_path = format!("records/{}.jsonl", resolved_session_id);
@@ -1547,7 +1554,9 @@ async fn upload_session_handler(
             "INSERT OR IGNORE INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![resolved_session_id, resolved_device_id, patient_id, created_at_utc, file_path]
         ) {
-            tracing::error!("Failed to insert session: {}", e);
+            tracing::error!("Failed to insert session {}: {}", resolved_session_id, e);
+        } else {
+            tracing::info!("Successfully inserted/verified session {} in database", resolved_session_id);
         }
         
         if let Some(parent) = Path::new(&file_path).parent() {
@@ -1555,27 +1564,35 @@ async fn upload_session_handler(
         }
         
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&file_path) {
+            tracing::info!("Writing {} frames to {}", payloads.len(), file_path);
             for payload in payloads {
                 if let Ok(json_string) = serde_json::to_string(&payload) {
                     let _ = writeln!(file, "{}", json_string);
+                    
+                    let frame_num = payload.frame_id.replace("frame_", "").parse::<i64>().unwrap_or(1);
+                    let start_sec = (frame_num - 1) as f64 * payload.duration_s;
+                    let end_sec = frame_num as f64 * payload.duration_s;
+                    
+                    let format_time = |secs: f64| -> String {
+                        let m = (secs / 60.0).floor() as i64;
+                        let s = (secs % 60.0).floor() as i64;
+                        format!("{:02}:{:02}", m, s)
+                    };
+                    let time_interval = format!("{} - {}", format_time(start_sec), format_time(end_sec));
+                    let frame_db_id = format!("fra{}{:06}", resolved_session_id.replace("session_", "").replace("ses_", ""), frame_num);
+                    
+                    for _ in 0..max_retries {
+                        let res = conn.execute(
+                            "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES (?1, ?2, ?3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
+                            params![frame_db_id, resolved_session_id, time_interval]
+                        );
+                        if res.is_ok() {
+                            break;
+                        } else if let Err(e) = res {
+                            tracing::error!("Failed to insert frame_record {}: {}", frame_db_id, e);
+                        }
+                    }
                 }
-                
-                let frame_num = payload.frame_id.replace("frame_", "").parse::<i64>().unwrap_or(1);
-                let start_sec = (frame_num - 1) as f64 * payload.duration_s;
-                let end_sec = frame_num as f64 * payload.duration_s;
-                
-                let format_time = |secs: f64| -> String {
-                    let m = (secs / 60.0).floor() as i64;
-                    let s = (secs % 60.0).floor() as i64;
-                    format!("{:02}:{:02}", m, s)
-                };
-                let time_interval = format!("{} - {}", format_time(start_sec), format_time(end_sec));
-                let frame_db_id = format!("fra{}{:06}", resolved_session_id.replace("session_", "").replace("ses_", ""), frame_num);
-                
-                let _ = conn.execute(
-                    "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES (?1, ?2, ?3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
-                    params![frame_db_id, resolved_session_id, time_interval]
-                );
             }
         }
         
