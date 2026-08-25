@@ -1581,6 +1581,7 @@ async fn upload_session_handler(
                     let time_interval = format!("{} - {}", format_time(start_sec), format_time(end_sec));
                     let frame_db_id = format!("fra{}{:06}", resolved_session_id.replace("session_", "").replace("ses_", ""), frame_num);
                     
+                    let max_retries = 3;
                     for _ in 0..max_retries {
                         let res = conn.execute(
                             "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES (?1, ?2, ?3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
