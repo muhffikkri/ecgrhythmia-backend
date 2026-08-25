@@ -1323,8 +1323,9 @@ async fn upload_session_handler(
         let name = field.name().unwrap_or_default().to_string();
         if name == "patient_id" {
             if let Ok(val) = field.text().await {
-                if !val.trim().is_empty() {
-                    patient_id = Some(val.trim().to_string());
+                let trimmed = val.trim();
+                if !trimmed.is_empty() && trimmed != "null" && trimmed != "undefined" {
+                    patient_id = Some(trimmed.to_string());
                 }
             }
         } else if name == "session_id" {
@@ -1533,17 +1534,21 @@ async fn upload_session_handler(
     payloads.sort_by(|a, b| a.frame_id.cmp(&b.frame_id));
     
     if let Ok(conn) = state.pool.get() {
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "INSERT OR IGNORE INTO devices (id, name) VALUES (?1, ?1)",
             params![resolved_device_id]
-        );
+        ) {
+            tracing::error!("Failed to insert device: {}", e);
+        }
         
         let file_path = format!("records/{}.jsonl", resolved_session_id);
         
-        let _ = conn.execute(
+        if let Err(e) = conn.execute(
             "INSERT OR IGNORE INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![resolved_session_id, resolved_device_id, patient_id, created_at_utc, file_path]
-        );
+        ) {
+            tracing::error!("Failed to insert session: {}", e);
+        }
         
         if let Some(parent) = Path::new(&file_path).parent() {
             let _ = fs::create_dir_all(parent);
