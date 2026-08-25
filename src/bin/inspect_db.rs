@@ -14,34 +14,38 @@ fn main() {
         }
     };
 
-    println!("\n=== DAFTAR PASIEN (5 Terbaru) ===");
-    if let Ok(mut stmt) = conn.prepare("SELECT id, first_name, last_name FROM patients ORDER BY id DESC LIMIT 5") {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let fname: String = row.get(1)?;
-            let lname: String = row.get(2)?;
-            Ok(format!("{} - {} {}", id, fname, lname))
-        }) {
-            for row in rows {
-                if let Ok(val) = row {
-                    println!("{}", val);
+    {
+        println!("\n=== DAFTAR PASIEN (5 Terbaru) ===");
+        if let Ok(mut stmt) = conn.prepare("SELECT id, first_name, last_name FROM patients ORDER BY id DESC LIMIT 5") {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let fname: String = row.get(1)?;
+                let lname: String = row.get(2)?;
+                Ok(format!("{} - {} {}", id, fname, lname))
+            }) {
+                for row in rows {
+                    if let Ok(val) = row {
+                        println!("{}", val);
+                    }
                 }
             }
         }
     }
 
-    println!("\n=== DAFTAR SESI (5 Terbaru) ===");
-    if let Ok(mut stmt) = conn.prepare("SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 5") {
-        if let Ok(rows) = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let patient_id: Option<String> = row.get(1)?;
-            let started_at: String = row.get(2)?;
-            let file_path: String = row.get(3)?;
-            Ok(format!("{} | Pasien: {} | Mulai: {} | File: {}", id, patient_id.unwrap_or_else(|| "NONE".to_string()), started_at, file_path))
-        }) {
-            for row in rows {
-                if let Ok(val) = row {
-                    println!("{}", val);
+    {
+        println!("\n=== DAFTAR SESI (5 Terbaru) ===");
+        if let Ok(mut stmt) = conn.prepare("SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 5") {
+            if let Ok(rows) = stmt.query_map([], |row| {
+                let id: String = row.get(0)?;
+                let patient_id: Option<String> = row.get(1)?;
+                let started_at: String = row.get(2)?;
+                let file_path: String = row.get(3)?;
+                Ok(format!("{} | Pasien: {} | Mulai: {} | File: {}", id, patient_id.unwrap_or_else(|| "NONE".to_string()), started_at, file_path))
+            }) {
+                for row in rows {
+                    if let Ok(val) = row {
+                        println!("{}", val);
+                    }
                 }
             }
         }
