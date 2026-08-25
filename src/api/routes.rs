@@ -1536,6 +1536,35 @@ async fn upload_session_handler(
             tracing::info!("Ensured device {} exists in database", resolved_device_id);
         }
         
+        if let Some(pid) = &patient_id {
+            let mut resolved_pid: Option<String> = None;
+            if pid.len() < 15 {
+                if let Ok(full_pid) = conn.query_row(
+                    "SELECT id FROM patients WHERE id LIKE (?1 || '%') LIMIT 1",
+                    params![pid],
+                    |row| row.get::<_, String>(0)
+                ) {
+                    resolved_pid = Some(full_pid);
+                }
+            } else {
+                let exists: bool = conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM patients WHERE id = ?1)",
+                    params![pid],
+                    |row| row.get(0)
+                ).unwrap_or(false);
+                if exists {
+                    resolved_pid = Some(pid.clone());
+                }
+            }
+            
+            if resolved_pid.is_none() {
+                tracing::warn!("Invalid or unresolved patient_id '{}'. Setting to None to prevent FK constraint failure.", pid);
+            } else if resolved_pid.as_deref() != Some(pid.as_str()) {
+                tracing::info!("Resolved truncated patient_id '{}' to '{}'", pid, resolved_pid.as_deref().unwrap());
+            }
+            patient_id = resolved_pid;
+        }
+
         let file_path = format!("records/{}.jsonl", resolved_session_id);
         
         if let Err(e) = conn.execute(
