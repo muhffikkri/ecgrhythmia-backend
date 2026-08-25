@@ -1318,6 +1318,7 @@ async fn upload_session_handler(
     
     let mut json_data: HashMap<String, String> = HashMap::new();
     let mut prediction_data: HashMap<String, String> = HashMap::new();
+    let mut system_data: HashMap<String, String> = HashMap::new();
     let mut csv_data: HashMap<String, String> = HashMap::new();
     
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -1351,6 +1352,12 @@ async fn upload_session_handler(
                     if let Ok(bytes) = field.bytes().await {
                         if let Ok(text) = String::from_utf8(bytes.to_vec()) {
                             prediction_data.insert(file_stem, text);
+                        }
+                    }
+                } else if file_name.ends_with("_system.json") {
+                    if let Ok(bytes) = field.bytes().await {
+                        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                            system_data.insert(file_stem, text);
                         }
                     }
                 } else {
@@ -1501,6 +1508,17 @@ async fn upload_session_handler(
             }
         };
 
+        let system_obj: Option<crate::models::device::DeviceSystem> = system_data.get(&format!("{}_system", stem))
+            .or_else(|| {
+                let system_filename = metadata.source_metadata.as_ref()
+                    .and_then(|m| m.csv_file.as_ref())
+                    .map(|s| s.replace("_ecg.csv", "_system.json").replace(".csv", "_system.json"))
+                    .unwrap_or_default();
+                let system_stem = Path::new(&system_filename).file_stem().unwrap_or_default().to_string_lossy().to_string();
+                system_data.get(&system_stem)
+            })
+            .and_then(|json_str| serde_json::from_str(json_str).ok());
+
         let payload = crate::models::device::DevicePayload {
             message_id: measurement_id,
             device_id: resolved_device_id.clone(),
@@ -1519,7 +1537,7 @@ async fn upload_session_handler(
                 samples: ecg_samples,
             },
             prediction,
-            system: None,
+            system: system_obj,
             stress_test: None,
             network: None,
         };
