@@ -1294,6 +1294,17 @@ struct UploadMetadata {
     unit: Option<String>,
 }
 
+#[allow(dead_code)]
+#[derive(Deserialize)]
+struct UploadPredictionMetadata {
+    prediction: Option<String>,
+    confidence_percent: Option<f64>,
+    probabilities: Option<serde_json::Value>,
+    threshold: Option<f64>,
+    latency_ms: Option<f64>,
+    runtime: Option<String>,
+}
+
 async fn upload_session_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
@@ -1303,6 +1314,7 @@ async fn upload_session_handler(
     let mut custom_device_id: Option<String> = None;
     
     let mut json_data: HashMap<String, String> = HashMap::new();
+    let mut prediction_data: HashMap<String, String> = HashMap::new();
     let mut csv_data: HashMap<String, String> = HashMap::new();
     
     while let Ok(Some(field)) = multipart.next_field().await {
@@ -1334,9 +1346,17 @@ async fn upload_session_handler(
                 .to_string();
                 
             if file_name.ends_with(".json") {
-                if let Ok(bytes) = field.bytes().await {
-                    if let Ok(text) = String::from_utf8(bytes.to_vec()) {
-                        json_data.insert(file_stem, text);
+                if file_name.ends_with("_prediction.json") {
+                    if let Ok(bytes) = field.bytes().await {
+                        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                            prediction_data.insert(file_stem, text);
+                        }
+                    }
+                } else {
+                    if let Ok(bytes) = field.bytes().await {
+                        if let Ok(text) = String::from_utf8(bytes.to_vec()) {
+                            json_data.insert(file_stem, text);
+                        }
                     }
                 }
             } else if file_name.ends_with(".csv") {
@@ -1454,6 +1474,38 @@ async fn upload_session_handler(
             .or_else(|| metadata.source_metadata.as_ref().and_then(|m| m.duration_seconds))
             .unwrap_or(10.0);
             
+        let prediction_stem = stem.replace("_mv", "_prediction");
+        let prediction_obj = prediction_data.get(&prediction_stem).and_then(|p_str| {
+            serde_json::from_str::<UploadPredictionMetadata>(p_str).ok()
+        });
+
+        let prediction = if let Some(p) = prediction_obj {
+            crate::models::device::DevicePrediction {
+                status: "PASS".to_string(),
+                label: p.prediction.unwrap_or_else(|| "Normal".to_string()),
+                confidence_percent: p.confidence_percent.unwrap_or(100.0),
+                probabilities: p.probabilities,
+                threshold: p.threshold.or(Some(0.5)),
+                latency_ms: p.latency_ms.or(Some(0.0)),
+                runtime: p.runtime.or(Some("ai-edge-litert".to_string())),
+            }
+        } else {
+            crate::models::device::DevicePrediction {
+                status: "PASS".to_string(),
+                label: "Normal".to_string(),
+                confidence_percent: 100.0,
+                probabilities: Some(serde_json::json!({
+                    "AF": 0.0,
+                    "Bradikardia": 0.0,
+                    "Normal": 100.0,
+                    "Takikardia": 0.0
+                })),
+                threshold: Some(0.5),
+                latency_ms: Some(0.0),
+                runtime: Some("ai-edge-litert".to_string()),
+            }
+        };
+
         let payload = crate::models::device::DevicePayload {
             message_id: measurement_id,
             device_id: resolved_device_id.clone(),
@@ -1470,15 +1522,7 @@ async fn upload_session_handler(
                 format: "samples_by_time".to_string(),
                 samples: ecg_samples,
             },
-            prediction: crate::models::device::DevicePrediction {
-                status: "PASS".to_string(),
-                label: "Normal".to_string(),
-                confidence_percent: 100.0,
-                probabilities: None,
-                threshold: None,
-                latency_ms: None,
-                runtime: None,
-            },
+            prediction,
             system: None,
             stress_test: None,
             network: None,
