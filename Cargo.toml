@@ -29,7 +29,13 @@ tower-http = { version = "0.5", features = ["cors", "trace", "fs"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "chrono"] }
 futures-util = "0.3"
+<<<<<<< HEAD
 bcrypt = "0.19.3"
+=======
+postgres = { version = "0.19", features = ["with-chrono-0_4"] }
+native-tls = "0.2"
+postgres-native-tls = "0.5"
+>>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }

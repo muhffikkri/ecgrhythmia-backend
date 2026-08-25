@@ -52,6 +52,9 @@ pub struct DevicePayload {
     pub message_id: String,
     pub device_id: String,
     pub session_id: String,
+    /// ID pasien yang terkait dengan sesi ini. Disimpan agar dapat dipulihkan dari file JSONL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub patient_id: Option<String>,
     pub frame_id: String,
     pub created_at: String,
     pub sampling_rate_hz: f64,

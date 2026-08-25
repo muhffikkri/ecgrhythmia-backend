@@ -42,5 +42,3 @@ Cargo.lock
 .DS_Store
 
 /openssl-custom/
-
-legacy_sqlite_db/

@@ -21,6 +21,7 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber)
         .expect("Gagal mengatur global default tracing subscriber");
 
+<<<<<<< HEAD
     // Cetak ASCII Banner
     println!("\x1b[36m");
     println!("   ____  ____  ____    ____             _                  _ ");
@@ -32,6 +33,10 @@ async fn main() {
     println!("  [ MEDICAL BACKEND ENGINE - V1.0 ]\x1b[0m\n");
 
     info!("Memulai inisialisasi sistem medis (Mode Asinkron Axum + PostgreSQL (Supabase))...");
+=======
+    info!("=== ecg-backend DIMULAI | v{} ===", env!("CARGO_PKG_VERSION"));
+    info!("Memulai inisialisasi sistem medis (Mode Asinkron Axum + SQLite + SQLCipher)...");
+>>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
 
     // 2. Muat Konfigurasi dari berkas .env
     let config = config::AppConfig::load();
@@ -59,6 +64,7 @@ async fn main() {
     let mqtt_clients = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     
     {
+<<<<<<< HEAD
         if let Ok(devices) = sqlx::query!("SELECT id, name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL")
             .fetch_all(&pool).await 
         {
@@ -88,6 +94,50 @@ async fn main() {
                                     );
                                 }
                             }
+=======
+        if let Ok(conn) = pool.get() {
+            if let Ok(mut stmt) = conn.prepare("SELECT id, name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL") {
+                if let Ok(device_iter) = stmt.query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u16>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
+                    ))
+                }) {
+                    for device in device_iter {
+                        if let Ok((id, name, broker, port, topic, username, password)) = device {
+                            let db_tx_clone = db_tx.clone();
+                            
+                            let client = network::mqtt_listener::start_mqtt_listener(
+                                &broker,
+                                port,
+                                &topic,
+                                &username,
+                                &password,
+                                move |payload_str| {
+                                    match serde_json::from_str::<models::device::DevicePayload>(&payload_str) {
+                                        Ok(device_payload) => {
+                                            let _ = db_tx_clone.send(device_payload);
+                                        }
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Gagal mem-parsing payload EKG dari perangkat: {}. Payload: {}",
+                                                e,
+                                                payload_str
+                                            );
+                                        }
+                                    }
+                                }
+                            );
+                            
+                            let mut clients_map = mqtt_clients.write().await;
+                            // Daftarkan menggunakan ID perangkat agar cocok dengan route parameter API
+                            clients_map.insert(id, client);
+>>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
                         }
                     );
                     
@@ -114,6 +164,22 @@ async fn main() {
     app = app
         .route("/", axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()))
         .route("/ws", axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()));
+
+    // 8.5. Jalankan Loop Sinkronisasi Latar Belakang (Setiap 10 Jam)
+    let pool_clone = pool.clone();
+    tokio::spawn(async move {
+        info!("[Background Sync] Loop sinkronisasi database asinkron berjalan...");
+        loop {
+            // Tunggu 10 jam di awal loop atau setelah sinkronisasi selesai?
+            // Biasanya jalankan sinkronisasi pertama kali setelah 10 jam atau langsung jalankan sekali pada saat startup.
+            // Jalankan sekali pada saat startup, lalu tunggu 10 jam.
+            match db::sync::sync_databases(&pool_clone) {
+                Ok(count) => info!("[Background Sync] Berhasil melakukan sinkronisasi database. Terproses: {} data.", count),
+                Err(e) => info!("[Background Sync] Sinkronisasi otomatis dilewati/gagal: {}", e),
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(10 * 3600)).await;
+        }
+    });
 
     // 9. Jalankan Server HTTP & WebSocket
     let addr_ws = format!("{}:{}", config.host_ip, config.ws_port);
