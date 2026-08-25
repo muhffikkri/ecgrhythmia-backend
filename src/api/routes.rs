@@ -1562,11 +1562,12 @@ async fn upload_session_handler(
             }
             
             if resolved_pid.is_none() {
-                tracing::error!("Invalid or unresolved patient_id '{}'. Aborting upload.", pid);
-                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
-                    "success": false,
-                    "message": format!("ID Pasien '{}' tidak valid atau tidak ditemukan di database.", pid)
-                })));
+                tracing::warn!("ID Pasien '{}' tidak valid. Membuat data pasien dummy untuk memaksa pencatatan session agar tidak null.", pid);
+                let _ = conn.execute(
+                    "INSERT OR IGNORE INTO patients (id, first_name, last_name, date_of_birth, gender) VALUES (?1, 'Unknown', 'Patient', '1900-01-01', 'U')",
+                    params![pid]
+                );
+                resolved_pid = Some(pid.clone());
             } else if resolved_pid.as_deref() != Some(pid.as_str()) {
                 tracing::info!("Resolved truncated patient_id '{}' to '{}'", pid, resolved_pid.as_deref().unwrap());
             }
