@@ -1832,9 +1832,22 @@ async fn create_session_handler(
 
 async fn create_record_handler(
     State(state): State<AppState>,
-    Json(payload): Json<crate::models::device::DevicePayload>,
+    body: String,
 ) -> impl IntoResponse {
-    let session_id = payload.session_id.clone();
+    let payload: serde_json::Value = match serde_json::from_str(&body) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Failed to parse payload: {}. Body: {}", e, body);
+            return (StatusCode::UNPROCESSABLE_ENTITY, Json(serde_json::json!({
+                "success": false,
+                "message": format!("Failed to parse payload: {}", e)
+            })));
+        }
+    };
+    
+    let session_id = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown_session").to_string();
+    let record_id = payload.get("id").or_else(|| payload.get("message_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    
     let file_path = format!("records/{}.jsonl", session_id);
     
     if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&file_path) {
@@ -1843,9 +1856,17 @@ async fn create_record_handler(
         }
         
         if let Ok(conn) = state.pool.get() {
-            let frame_num = payload.frame_id.replace("frame_", "").parse::<i64>().unwrap_or(1);
-            let start_sec = (frame_num - 1) as f64 * payload.duration_s;
-            let end_sec = frame_num as f64 * payload.duration_s;
+            // Coba ambil start_time dari root (frontend format)
+            let start_sec = payload.get("start_time").and_then(|v| v.as_f64()).unwrap_or_else(|| {
+                // Fallback: hitung dari frame_id dan duration (old format)
+                let frame_id = payload.get("frame_id").or_else(|| payload.pointer("/payload/source_frame")).and_then(|v| v.as_str()).unwrap_or("frame_1");
+                let frame_num = frame_id.replace("frame_", "").parse::<f64>().unwrap_or(1.0);
+                let duration = payload.get("duration_s").or_else(|| payload.pointer("/payload/duration_seconds")).and_then(|v| v.as_f64()).unwrap_or(10.0);
+                (frame_num - 1.0) * duration
+            });
+            
+            let duration = payload.pointer("/payload/duration_seconds").or_else(|| payload.get("duration_s")).and_then(|v| v.as_f64()).unwrap_or(10.0);
+            let end_sec = start_sec + duration;
             
             let format_time = |secs: f64| -> String {
                 let m = (secs / 60.0).floor() as i64;
@@ -1856,7 +1877,7 @@ async fn create_record_handler(
             
             let _ = conn.execute(
                 "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES (?1, ?2, ?3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
-                params![payload.message_id, session_id, time_interval]
+                params![record_id, session_id, time_interval]
             );
         }
         
