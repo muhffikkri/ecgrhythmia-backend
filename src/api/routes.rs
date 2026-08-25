@@ -866,7 +866,7 @@ fn get_sessions_from_db(filter_patient_id: Option<String>, pool: &DbPool) -> Vec
             "SELECT s.id, s.device_id, s.patient_id, p.first_name || ' ' || p.last_name, s.started_at, s.ended_at, s.file_path 
              FROM sessions s 
              LEFT JOIN patients p ON s.patient_id = p.id 
-             WHERE s.patient_id = ?1
+             WHERE s.patient_id LIKE (?1 || '%')
              ORDER BY s.started_at DESC"
         } else {
             "SELECT s.id, s.device_id, s.patient_id, p.first_name || ' ' || p.last_name, s.started_at, s.ended_at, s.file_path 
