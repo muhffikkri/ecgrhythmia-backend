@@ -12,6 +12,7 @@ async fn main() {
     tracing::subscriber::set_global_default(subscriber)
         .expect("Gagal mengatur global default tracing subscriber");
 
+    info!("=== ecg-backend DIMULAI | v{} ===", env!("CARGO_PKG_VERSION"));
     info!("Memulai inisialisasi sistem medis (Mode Asinkron Axum + SQLite + SQLCipher)...");
 
     // 2. Muat Konfigurasi dari berkas .env
