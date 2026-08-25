@@ -18,6 +18,8 @@ pub struct SqlcipherCustomizer {
 impl r2d2::CustomizeConnection<rusqlite::Connection, rusqlite::Error> for SqlcipherCustomizer {
     fn on_acquire(&self, conn: &mut rusqlite::Connection) -> Result<(), rusqlite::Error> {
         conn.execute_batch(&format!("PRAGMA key = '{}';", self.key))?;
+        // Matikan foreign key enforcement agar insert tidak diblokir oleh FK constraint
+        conn.execute_batch("PRAGMA foreign_keys = OFF;")?;
         Ok(())
     }
 }

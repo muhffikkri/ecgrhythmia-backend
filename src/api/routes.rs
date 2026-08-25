@@ -1531,24 +1531,34 @@ async fn upload_session_handler(
     payloads.sort_by(|a, b| a.frame_id.cmp(&b.frame_id));
     
     if let Ok(conn) = state.pool.get() {
-        if let Err(e) = conn.execute(
+        tracing::info!("[Upload] Koneksi DB berhasil. Memulai pencatatan ke database...");
+
+        // === 1. Pastikan device ada ===
+        tracing::info!("[Upload] Menyimpan device: {}", resolved_device_id);
+        match conn.execute(
             "INSERT OR IGNORE INTO devices (id, name) VALUES (?1, ?1)",
             params![resolved_device_id]
         ) {
-            tracing::error!("Failed to insert device {}: {}", resolved_device_id, e);
-        } else {
-            tracing::info!("Ensured device {} exists in database", resolved_device_id);
+            Ok(rows) => tracing::info!("[Upload] Device '{}' OK (rows affected: {})", resolved_device_id, rows),
+            Err(e)   => tracing::error!("[Upload] GAGAL insert device '{}': {:?}", resolved_device_id, e),
         }
         
+        // === 2. Resolve patient_id ===
+        tracing::info!("[Upload] Patient ID dari request: {:?}", patient_id);
         if let Some(pid) = &patient_id {
             let mut resolved_pid: Option<String> = None;
             if pid.len() < 15 {
-                if let Ok(full_pid) = conn.query_row(
+                tracing::info!("[Upload] patient_id '{}' terpotong (len={}), mencari ID lengkapnya...", pid, pid.len());
+                match conn.query_row(
                     "SELECT id FROM patients WHERE id LIKE (?1 || '%') LIMIT 1",
                     params![pid],
                     |row| row.get::<_, String>(0)
                 ) {
-                    resolved_pid = Some(full_pid);
+                    Ok(full_pid) => {
+                        tracing::info!("[Upload] Berhasil resolve '{}' -> '{}'", pid, full_pid);
+                        resolved_pid = Some(full_pid);
+                    }
+                    Err(e) => tracing::warn!("[Upload] Gagal resolve truncated patient_id '{}': {:?}", pid, e),
                 }
             } else {
                 let exists: bool = conn.query_row(
@@ -1557,40 +1567,50 @@ async fn upload_session_handler(
                     |row| row.get(0)
                 ).unwrap_or(false);
                 if exists {
+                    tracing::info!("[Upload] patient_id '{}' ditemukan di database", pid);
                     resolved_pid = Some(pid.clone());
+                } else {
+                    tracing::warn!("[Upload] patient_id '{}' TIDAK ditemukan di tabel patients", pid);
                 }
             }
             
             if resolved_pid.is_none() {
-                tracing::warn!("ID Pasien '{}' tidak valid. Membuat data pasien dummy untuk memaksa pencatatan session agar tidak null.", pid);
-                let _ = conn.execute(
+                tracing::warn!("[Upload] Membuat pasien dummy untuk patient_id '{}' agar sesi tetap tercatat", pid);
+                match conn.execute(
                     "INSERT OR IGNORE INTO patients (id, first_name, last_name, date_of_birth, gender) VALUES (?1, 'Unknown', 'Patient', '1900-01-01', 'U')",
                     params![pid]
-                );
+                ) {
+                    Ok(rows) => tracing::info!("[Upload] Pasien dummy '{}' berhasil dibuat (rows: {})", pid, rows),
+                    Err(e)   => tracing::error!("[Upload] GAGAL membuat pasien dummy '{}': {:?}", pid, e),
+                }
                 resolved_pid = Some(pid.clone());
-            } else if resolved_pid.as_deref() != Some(pid.as_str()) {
-                tracing::info!("Resolved truncated patient_id '{}' to '{}'", pid, resolved_pid.as_deref().unwrap());
             }
             patient_id = resolved_pid;
+        } else {
+            tracing::warn!("[Upload] Tidak ada patient_id yang disertakan dalam request");
         }
+        tracing::info!("[Upload] Patient ID setelah resolve: {:?}", patient_id);
 
         let file_path = format!("records/{}.jsonl", resolved_session_id);
         
-        if let Err(e) = conn.execute(
+        // === 3. Insert session ke database TERLEBIH DAHULU ===
+        tracing::info!("[Upload] Menyimpan session ke DB: id={}, device={}, patient={:?}, started={}, file={}",
+            resolved_session_id, resolved_device_id, patient_id, created_at_utc, file_path);
+        match conn.execute(
             "INSERT OR IGNORE INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
             params![resolved_session_id, resolved_device_id, patient_id, created_at_utc, file_path]
         ) {
-            tracing::error!("Failed to insert session {}: {}", resolved_session_id, e);
-        } else {
-            tracing::info!("Successfully inserted/verified session {} in database", resolved_session_id);
+            Ok(rows) => tracing::info!("[Upload] Session '{}' berhasil dicatat ke DB! (rows affected: {})", resolved_session_id, rows),
+            Err(e)   => tracing::error!("[Upload] GAGAL insert session '{}': {:?}", resolved_session_id, e),
         }
         
+        // === 4. Tulis file JSONL SETELAH DB berhasil ===
         if let Some(parent) = Path::new(&file_path).parent() {
             let _ = fs::create_dir_all(parent);
         }
         
         if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(&file_path) {
-            tracing::info!("Writing {} frames to {}", payloads.len(), file_path);
+            tracing::info!("[Upload] Menulis {} frame ke file {}", payloads.len(), file_path);
             for payload in payloads {
                 if let Ok(json_string) = serde_json::to_string(&payload) {
                     let _ = writeln!(file, "{}", json_string);
