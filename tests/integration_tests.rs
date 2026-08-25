@@ -393,6 +393,9 @@ async fn test_ekg_crud_endpoints() {
 
 #[tokio::test]
 async fn test_ekg_session_upload() {
+    // Ensure cleanup of previous failed test runs
+    let _ = std::fs::remove_file("records/ses000000000001.jsonl");
+
     let (state, _pacer_rx, _db_rx) = setup_test_state();
     
     // Seed patient first to avoid foreign key constraint error when inserting session
@@ -412,14 +415,33 @@ async fn test_ekg_session_upload() {
          Content-Disposition: form-data; name=\"patient_id\"\r\n\r\n\
          pat_upload_test\r\n\
          --{boundary}\r\n\
-         Content-Disposition: form-data; name=\"frame_000001.json\"; filename=\"frame_000001.json\"\r\n\
+         Content-Disposition: form-data; name=\"frame_000001_mv.json\"; filename=\"frame_000001_mv.json\"\r\n\
          Content-Type: application/json\r\n\r\n\
-         {{\"source_frame\":\"frame_000001\",\"source_metadata\":{{\"device_id\":\"device01\",\"session_id\":\"session_upload_test\",\"csv_file\":\"frame_000001.csv\",\"sample_rate_hz\":250.0,\"duration_seconds\":10.0}}}}\r\n\
+         {{\"source_frame\":\"frame_000001\",\"source_metadata\":{{\"device_id\":\"device01\",\"session_id\":\"session_upload_test\",\"csv_file\":\"frame_000001_mv.csv\",\"sample_rate_hz\":250.0,\"duration_seconds\":10.0}}}}\r\n\
          --{boundary}\r\n\
-         Content-Disposition: form-data; name=\"frame_000001.csv\"; filename=\"frame_000001.csv\"\r\n\
+         Content-Disposition: form-data; name=\"frame_000001_prediction.json\"; filename=\"frame_000001_prediction.json\"\r\n\
+         Content-Type: application/json\r\n\r\n\
+         {{\"status\":\"PASS\",\"prediction\":\"Normal\",\"system\":\"SystemV1\",\"network\":\"NetV1\",\"warnings\":[]}}\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"frame_000001_mv.csv\"; filename=\"frame_000001_mv.csv\"\r\n\
          Content-Type: text/csv\r\n\r\n\
          time,ch1,ch2,ch3\r\n\
          0.0,0.1,0.2,0.3\r\n\
+         0.004,0.11,0.21,0.31\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"frame_000002_mv.json\"; filename=\"frame_000002_mv.json\"\r\n\
+         Content-Type: application/json\r\n\r\n\
+         {{\"source_frame\":\"frame_000002\",\"source_metadata\":{{\"device_id\":\"device01\",\"session_id\":\"session_upload_test\",\"csv_file\":\"frame_000002_mv.csv\",\"sample_rate_hz\":250.0,\"duration_seconds\":10.0}}}}\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"frame_000002_prediction.json\"; filename=\"frame_000002_prediction.json\"\r\n\
+         Content-Type: application/json\r\n\r\n\
+         {{\"status\":\"PASS\",\"prediction\":\"Abnormal\",\"system\":\"SystemV1\",\"network\":\"NetV1\",\"warnings\":[\"Noise detect\"]}}\r\n\
+         --{boundary}\r\n\
+         Content-Disposition: form-data; name=\"frame_000002_mv.csv\"; filename=\"frame_000002_mv.csv\"\r\n\
+         Content-Type: text/csv\r\n\r\n\
+         time,ch1,ch2,ch3\r\n\
+         10.0,0.5,0.6,0.7\r\n\
+         10.004,0.51,0.61,0.71\r\n\
          --{boundary}--\r\n"
     );
 
@@ -439,28 +461,59 @@ async fn test_ekg_session_upload() {
     let body_bytes = axum::body::to_bytes(response.into_body(), 1024 * 10).await.unwrap();
     let res_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
     assert!(res_json["success"].as_bool().unwrap());
-    assert_eq!(res_json["session_id"].as_str().unwrap(), "session_upload_test");
+    
+    // session_id is auto-generated
+    let generated_session_id = res_json["session_id"].as_str().unwrap().to_string();
+    assert!(generated_session_id.starts_with("ses"));
 
-    // Verify session and frame record were created in DB
+    // Verify exactly 1 session and exactly 2 frame records were created in DB
     {
         let conn = state.pool.get().unwrap();
-        let session_exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = 'session_upload_test')",
-            [],
+        let session_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sessions WHERE id = ?1",
+            [&generated_session_id],
             |row| row.get(0)
         ).unwrap();
-        assert!(session_exists);
+        assert_eq!(session_count, 1, "There should be exactly 1 session created");
+        
+        let session_patient: String = conn.query_row(
+            "SELECT patient_id FROM sessions WHERE id = ?1",
+            [&generated_session_id],
+            |row| row.get(0)
+        ).unwrap();
+        assert_eq!(session_patient, "pat_upload_test");
 
-        let frame_exists: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM frame_records WHERE session_id = 'session_upload_test')",
-            [],
+        let frame_count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM frame_records WHERE session_id = ?1",
+            [&generated_session_id],
             |row| row.get(0)
         ).unwrap();
-        assert!(frame_exists);
+        assert_eq!(frame_count, 2, "There should be exactly 2 frames recorded for the new session");
     }
 
+    // Read the created .jsonl file and verify its contents
+    let file_path = format!("records/{}.jsonl", generated_session_id);
+    let file_content = std::fs::read_to_string(&file_path).expect("Failed to read generated .jsonl file");
+    
+    let mut lines = file_content.lines();
+    
+    // Check first frame
+    let frame1_str = lines.next().expect("Expected first frame in .jsonl");
+    let frame1: DevicePayload = serde_json::from_str(frame1_str).expect("Failed to parse frame 1");
+    assert_eq!(frame1.frame_id, "frame_000001");
+    assert_eq!(frame1.session_id, generated_session_id);
+    assert_eq!(frame1.validation.status, "PASS");
+    
+    // Check second frame
+    let frame2_str = lines.next().expect("Expected second frame in .jsonl");
+    let frame2: DevicePayload = serde_json::from_str(frame2_str).expect("Failed to parse frame 2");
+    assert_eq!(frame2.frame_id, "frame_000002");
+    assert_eq!(frame2.session_id, generated_session_id);
+    assert_eq!(frame2.validation.status, "PASS");
+
     // Clean up file
-    let _ = std::fs::remove_file("records/session_upload_test.jsonl");
+    let _ = std::fs::remove_file(&file_path);
+    // Ignore error if records dir isn't empty
     let _ = std::fs::remove_dir("records");
 }
 
