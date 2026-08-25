@@ -45,19 +45,20 @@ async fn main() {
     
     {
         if let Ok(conn) = pool.get() {
-            if let Ok(mut stmt) = conn.prepare("SELECT name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL") {
+            if let Ok(mut stmt) = conn.prepare("SELECT id, name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL") {
                 if let Ok(device_iter) = stmt.query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, u16>(2)?,
-                        row.get::<_, String>(3)?,
+                        row.get::<_, String>(2)?,
+                        row.get::<_, u16>(3)?,
                         row.get::<_, String>(4)?,
                         row.get::<_, String>(5)?,
+                        row.get::<_, String>(6)?,
                     ))
                 }) {
                     for device in device_iter {
-                        if let Ok((name, broker, port, topic, username, password)) = device {
+                        if let Ok((id, name, broker, port, topic, username, password)) = device {
                             let db_tx_clone = db_tx.clone();
                             
                             let client = network::mqtt_listener::start_mqtt_listener(
@@ -83,7 +84,8 @@ async fn main() {
                             );
                             
                             let mut clients_map = mqtt_clients.write().await;
-                            clients_map.insert(name, client);
+                            // Daftarkan menggunakan ID perangkat agar cocok dengan route parameter API
+                            clients_map.insert(id, client);
                         }
                     }
                 }

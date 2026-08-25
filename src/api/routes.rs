@@ -649,16 +649,32 @@ async fn device_command_handler(
         }
     }
 
+    // Dapatkan ID asli dan topic dari database
+    let (true_id, mut topic) = if let Ok(conn) = state.pool.get() {
+        conn.query_row(
+            "SELECT id, mqtt_topic FROM devices WHERE id = ?1 OR name = ?1 LIMIT 1",
+            params![device_id],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        ).unwrap_or((device_id.clone(), None))
+    } else {
+        (device_id.clone(), None)
+    };
 
     if let Some(ref pid) = cmd.patient_id {
         if let Ok(conn) = state.pool.get() {
-            let _ = conn.execute("UPDATE devices SET assigned_to = ?1 WHERE name = ?2", params![pid, device_id]);
+            let _ = conn.execute("UPDATE devices SET assigned_to = ?1 WHERE id = ?2", params![pid, true_id]);
         }
     }
-    let topic = format!("ecgrhythmia/{}/command", device_id);
+    
+    // Jika tidak ada topic di DB, fallback menggunakan format default
+    let publish_topic = topic
+        .map(|t| format!("{}/command", t))
+        .unwrap_or_else(|| format!("ecgrhythmia/{}/command", true_id));
+        
     let clients = state.mqtt_clients.read().await;
-    if let Some(client) = clients.get(&device_id) {
-        if let Err(e) = client.clone().publish(topic, rumqttc::QoS::AtLeastOnce, false, cmd.command) {
+    // Cari berdasarkan true_id (karena main.rs sekarang menyimpan menggunakan id)
+    if let Some(client) = clients.get(&true_id) {
+        if let Err(e) = client.clone().publish(publish_topic, rumqttc::QoS::AtLeastOnce, false, cmd.command) {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": format!("Gagal mengirim perintah: {}", e)})))
         } else {
             (StatusCode::OK, Json(serde_json::json!({"success": true})))

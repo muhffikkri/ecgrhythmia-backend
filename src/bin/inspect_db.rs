@@ -42,4 +42,20 @@ fn main() {
             println!("{}", row.unwrap());
         }
     }
+
+    println!("\n=== DAFTAR DEVICES ===");
+    {
+        let mut stmt = conn.prepare("SELECT id, name, mqtt_topic, mqtt_broker, mqtt_port FROM devices").unwrap();
+        let rows = stmt.query_map([], |row| {
+            let id: String = row.get(0)?;
+            let name: String = row.get(1)?;
+            let topic: Option<String> = row.get(2)?;
+            let broker: Option<String> = row.get(3)?;
+            let port: Option<u16> = row.get(4)?;
+            Ok(format!("ID: {} | Name: {} | Topic: {} | Broker: {:?} | Port: {:?}", id, name, topic.unwrap_or_else(|| "NONE".to_string()), broker, port))
+        }).unwrap();
+        for row in rows {
+            println!("{}", row.unwrap());
+        }
+    }
 }
