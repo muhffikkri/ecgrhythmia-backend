@@ -14,9 +14,9 @@ fn main() {
         }
     };
 
-    println!("\n=== DAFTAR PASIEN (5 Terbaru) ===");
+    println!("\n=== DAFTAR PASIEN (10 Terbaru) ===");
     {
-        let mut stmt = conn.prepare("SELECT id, first_name, last_name FROM patients ORDER BY id DESC LIMIT 5").unwrap();
+        let mut stmt = conn.prepare("SELECT id, first_name, last_name FROM patients ORDER BY id DESC LIMIT 10").unwrap();
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let fname: String = row.get(1)?;
@@ -28,9 +28,9 @@ fn main() {
         }
     }
 
-    println!("\n=== DAFTAR SESI (5 Terbaru) ===");
+    println!("\n=== DAFTAR SESI (10 Terbaru) ===");
     {
-        let mut stmt = conn.prepare("SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 5").unwrap();
+        let mut stmt = conn.prepare("SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 10").unwrap();
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let patient_id: Option<String> = row.get(1)?;
