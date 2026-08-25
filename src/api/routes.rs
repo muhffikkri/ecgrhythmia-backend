@@ -1311,6 +1311,8 @@ async fn upload_session_handler(
     State(state): State<AppState>,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
+    tracing::info!("--- Starting manual upload processing ---");
+    
     let mut patient_id: Option<String> = None;
     let mut custom_device_id: Option<String> = None;
     
@@ -1367,6 +1369,8 @@ async fn upload_session_handler(
             }
         }
     }
+    
+    tracing::info!("Multipart parsing complete. Received: {} base JSON metadata, {} prediction JSON, {} CSV data files", json_data.len(), prediction_data.len(), csv_data.len());
     
     if json_data.is_empty() {
         return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
