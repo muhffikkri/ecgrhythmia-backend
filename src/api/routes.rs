@@ -1558,7 +1558,11 @@ async fn upload_session_handler(
             }
             
             if resolved_pid.is_none() {
-                tracing::warn!("Invalid or unresolved patient_id '{}'. Setting to None to prevent FK constraint failure.", pid);
+                tracing::error!("Invalid or unresolved patient_id '{}'. Aborting upload.", pid);
+                return (StatusCode::BAD_REQUEST, Json(serde_json::json!({
+                    "success": false,
+                    "message": format!("ID Pasien '{}' tidak valid atau tidak ditemukan di database.", pid)
+                })));
             } else if resolved_pid.as_deref() != Some(pid.as_str()) {
                 tracing::info!("Resolved truncated patient_id '{}' to '{}'", pid, resolved_pid.as_deref().unwrap());
             }
