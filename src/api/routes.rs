@@ -1505,6 +1505,7 @@ async fn upload_session_handler(
             message_id: measurement_id,
             device_id: resolved_device_id.clone(),
             session_id: resolved_session_id.clone(),
+            patient_id: patient_id.clone(),
             frame_id,
             created_at: created_at_utc.clone(),
             sampling_rate_hz: sample_rate,
