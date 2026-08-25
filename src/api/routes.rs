@@ -1440,15 +1440,10 @@ async fn upload_session_handler(
             .unwrap_or_else(|| "device01".to_string());
             
         if resolved_session_id.is_empty() {
-            let temp_id = custom_session_id.clone().unwrap_or(file_session_id);
-            if temp_id.starts_with("ses") && temp_id.len() == 15 {
-                resolved_session_id = temp_id;
+            if let Ok(conn) = state.pool.get() {
+                resolved_session_id = crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses");
             } else {
-                if let Ok(conn) = state.pool.get() {
-                    resolved_session_id = crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses");
-                } else {
-                    resolved_session_id = format!("ses_{}", chrono::Utc::now().timestamp_millis());
-                }
+                resolved_session_id = format!("ses_{}", chrono::Utc::now().timestamp_millis());
             }
         }
         if resolved_device_id.is_empty() {
@@ -1916,8 +1911,15 @@ async fn create_record_handler(
         }
     };
     
-    let session_id = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown_session").to_string();
+    let mut session_id = payload.get("session_id").and_then(|v| v.as_str()).unwrap_or("unknown_session").to_string();
     let record_id = payload.get("id").or_else(|| payload.get("message_id")).and_then(|v| v.as_str()).unwrap_or("").to_string();
+    
+    // Paksa validasi nama session_id agar sesuai format (ses + 12 digit)
+    if !(session_id.starts_with("ses") && session_id.len() == 15) {
+        if let Ok(conn) = state.pool.get() {
+            session_id = crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses");
+        }
+    }
     
     let file_path = format!("records/{}.jsonl", session_id);
     
