@@ -1418,7 +1418,16 @@ async fn upload_session_handler(
             .unwrap_or_else(|| "device01".to_string());
             
         if resolved_session_id.is_empty() {
-            resolved_session_id = custom_session_id.clone().unwrap_or(file_session_id);
+            let temp_id = custom_session_id.clone().unwrap_or(file_session_id);
+            if temp_id.starts_with("ses") && temp_id.len() >= 15 {
+                resolved_session_id = temp_id;
+            } else {
+                if let Ok(conn) = state.pool.get() {
+                    resolved_session_id = crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses");
+                } else {
+                    resolved_session_id = format!("ses_{}", chrono::Utc::now().timestamp_millis());
+                }
+            }
         }
         if resolved_device_id.is_empty() {
             resolved_device_id = custom_device_id.clone().unwrap_or(file_device_id);
@@ -1803,7 +1812,23 @@ async fn create_session_handler(
     State(state): State<AppState>,
     Json(req): Json<CreateSessionRequest>,
 ) -> impl IntoResponse {
-    let session_id = req.id.unwrap_or_else(|| format!("session_{}", chrono::Utc::now().timestamp_millis()));
+    let session_id = if let Some(id) = req.id {
+        if id.starts_with("ses") && id.len() >= 15 {
+            id
+        } else {
+            if let Ok(conn) = state.pool.get() {
+                crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses")
+            } else {
+                format!("ses_{}", chrono::Utc::now().timestamp_millis())
+            }
+        }
+    } else {
+        if let Ok(conn) = state.pool.get() {
+            crate::db::sqlite::generate_custom_id(&conn, "sessions", "ses")
+        } else {
+            format!("ses_{}", chrono::Utc::now().timestamp_millis())
+        }
+    };
     let started_at = req.started_at.unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
     let file_path = format!("records/{}.jsonl", session_id);
     
