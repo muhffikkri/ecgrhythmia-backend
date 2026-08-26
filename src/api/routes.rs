@@ -3,7 +3,7 @@ use std::path::Path;
 use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use rusqlite::params;
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use base64::{Engine as _, engine::general_purpose::STANDARD as base64_engine};
 use crate::db::sqlite::{generate_custom_id, DbPool};
 use bcrypt::{hash, verify, DEFAULT_COST};
@@ -23,6 +23,7 @@ use tracing::{info, error};
 pub struct AppState {
     pub pool: DbPool,
     pub mqtt_clients: std::sync::Arc<tokio::sync::RwLock<HashMap<String, rumqttc::Client>>>,
+    pub clients: crate::network::websocket::ClientList,
     pub pacer_tx: tokio::sync::mpsc::UnboundedSender<crate::models::device::DevicePayload>,
     pub db_tx: tokio::sync::mpsc::UnboundedSender<crate::models::device::DevicePayload>,
     pub jwt_secret: String,
@@ -167,6 +168,7 @@ pub struct PatientRecord {
     pub primary_doctor_id: Option<String>,
     pub profile_photo: Option<String>,
     pub device_id: Option<String>,
+    pub age: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -204,7 +206,8 @@ pub struct UpdateDoctorProfileRequest {
 pub struct UpdatePatientProfileRequest {
     pub first_name: String,
     pub last_name: String,
-    pub date_of_birth: String,
+    pub date_of_birth: Option<String>,
+    pub age: Option<i64>,
     pub gender: Option<String>,
     pub profile_photo: Option<String>,
 }
@@ -482,6 +485,13 @@ async fn get_patient_profile_handler(
     }
 }
 
+async fn get_recording_status_handler(
+    State(state): State<AppState>,
+    AxumPath(patient_id): AxumPath<String>,
+) -> impl IntoResponse {
+    (StatusCode::OK, Json(get_recording_status(&patient_id, &state.pool)))
+}
+
 async fn get_doctor_profile_handler(
     State(state): State<AppState>,
     AxumPath(doctor_id): AxumPath<String>,
@@ -634,9 +644,14 @@ async fn device_command_handler(
     AxumPath(device_id): AxumPath<String>,
     Json(cmd): Json<DeviceCommand>,
 ) -> impl IntoResponse {
-    if cmd.command.to_uppercase() == "START" {
+    let command = cmd.command.to_uppercase();
+    let patient_id = cmd.patient_id.clone().or_else(|| state.pool.get().ok().and_then(|conn| {
+        conn.query_row("SELECT id FROM patients WHERE device_id = ?1 LIMIT 1", params![device_id], |row| row.get::<_, String>(0)).ok()
+    }));
+
+    if command == "START" {
         info!(device_id = %device_id, "Perekaman Dimulai");
-    } else if cmd.command.to_uppercase() == "STOP" {
+    } else if command == "STOP" {
         info!(device_id = %device_id, "Perekaman Selesai");
         if let Ok(conn) = state.pool.get() {
             let now_str = chrono::Utc::now().to_rfc3339();
@@ -660,9 +675,9 @@ async fn device_command_handler(
         (device_id.clone(), None)
     };
 
-    if let Some(ref pid) = cmd.patient_id {
+    if let Some(ref pid) = patient_id {
         if let Ok(conn) = state.pool.get() {
-            let _ = conn.execute("UPDATE devices SET assigned_to = ?1 WHERE id = ?2", params![pid, true_id]);
+            let _ = conn.execute("UPDATE patients SET device_id = ?1 WHERE id = ?2", params![true_id, pid]);
         }
     }
     
@@ -674,9 +689,19 @@ async fn device_command_handler(
     let clients = state.mqtt_clients.read().await;
     // Cari berdasarkan true_id (karena main.rs sekarang menyimpan menggunakan id)
     if let Some(client) = clients.get(&true_id) {
-        if let Err(e) = client.clone().publish(publish_topic, rumqttc::QoS::AtLeastOnce, false, cmd.command) {
+        if let Err(e) = client.clone().publish(publish_topic, rumqttc::QoS::AtLeastOnce, false, command.clone()) {
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": format!("Gagal mengirim perintah: {}", e)})))
         } else {
+            if let Some(ref pid) = patient_id {
+                let active = command == "START";
+                if let Ok(conn) = state.pool.get() {
+                    if let Err(e) = conn.execute(
+                        "INSERT INTO recording_states (patient_id, device_id, active, updated_at) VALUES (?1, ?2, ?3, ?4) ON CONFLICT(patient_id) DO UPDATE SET device_id = excluded.device_id, active = excluded.active, updated_at = excluded.updated_at",
+                        params![pid, true_id, active, Utc::now().to_rfc3339()],
+                    ) { error!(error = %e, "Gagal menyimpan status recording"); }
+                }
+                broadcast_recording_status(&state.clients, pid, &true_id, active);
+            }
             (StatusCode::OK, Json(serde_json::json!({"success": true})))
         }
     } else {
@@ -1069,6 +1094,7 @@ fn get_patient_profile(patient_id: String, pool: &DbPool) -> Option<PatientProfi
                 primary_doctor_id: row.get(5)?,
                 profile_photo: row.get(6)?,
                 device_id: row.get(7)?,
+                age: calculate_age(&row.get::<_, String>(3)?),
             })
         }).ok()?;
         
@@ -1130,6 +1156,45 @@ fn get_doctor_profile(doctor_id: String, pool: &DbPool) -> Option<DoctorProfileR
         }
     }
     None
+}
+
+fn calculate_age(date_of_birth: &str) -> Option<i64> {
+    let birth = chrono::NaiveDate::parse_from_str(date_of_birth, "%Y-%m-%d").ok()?;
+    let today = Utc::now().date_naive();
+    let mut age = today.year() - birth.year();
+    if (today.month(), today.day()) < (birth.month(), birth.day()) { age -= 1; }
+    Some(age as i64)
+}
+
+fn get_recording_status(patient_id: &str, pool: &DbPool) -> serde_json::Value {
+    pool.get().ok().and_then(|conn| conn.query_row(
+        "SELECT device_id, active, updated_at FROM recording_states WHERE patient_id = ?1",
+        params![patient_id],
+        |row| Ok(serde_json::json!({
+            "patient_id": patient_id,
+            "device_id": row.get::<_, String>(0)?,
+            "active": row.get::<_, i64>(1)? != 0,
+            "updated_at": row.get::<_, String>(2)?
+        })),
+    ).ok()).unwrap_or_else(|| serde_json::json!({
+        "patient_id": patient_id,
+        "device_id": null,
+        "active": false,
+        "updated_at": null
+    }))
+}
+
+fn broadcast_recording_status(clients: &crate::network::websocket::ClientList, patient_id: &str, device_id: &str, active: bool) {
+    let message = serde_json::json!({
+        "type": "recording_status",
+        "patient_id": patient_id,
+        "device_id": device_id,
+        "active": active,
+        "updated_at": Utc::now().to_rfc3339()
+    }).to_string();
+    if let Ok(mut clients_lock) = clients.lock() {
+        clients_lock.retain(|sender| sender.send(message.clone()).is_ok());
+    }
 }
 
 fn update_doctor_profile(doctor_id: &str, req: UpdateDoctorProfileRequest, pool: &DbPool, api_url: &str) -> Result<(), String> {
@@ -1203,15 +1268,20 @@ fn update_patient_profile(patient_id: &str, req: UpdatePatientProfileRequest, po
         }
     }
 
+    let date_of_birth = req.date_of_birth.or_else(|| req.age.map(|age| {
+        let today = Utc::now().date_naive();
+        format!("{}-{:02}-{:02}", today.year() - age as i32, today.month(), today.day())
+    })).ok_or_else(|| "date_of_birth atau age wajib diisi".to_string())?;
+
     if let Some(gender) = req.gender {
         conn.execute(
             "UPDATE patients SET first_name = ?1, last_name = ?2, date_of_birth = ?3, gender = ?4 WHERE id = ?5",
-            params![req.first_name, req.last_name, req.date_of_birth, gender, patient_id]
+            params![req.first_name, req.last_name, date_of_birth, gender, patient_id]
         ).map_err(|e| e.to_string())?;
     } else {
         conn.execute(
             "UPDATE patients SET first_name = ?1, last_name = ?2, date_of_birth = ?3 WHERE id = ?4",
-            params![req.first_name, req.last_name, req.date_of_birth, patient_id]
+            params![req.first_name, req.last_name, date_of_birth, patient_id]
         ).map_err(|e| e.to_string())?;
     }
 
@@ -2111,6 +2181,7 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/patients", get(get_patients_handler).post(add_patient_handler))
         .route("/api/patients/:patient_id/sessions", get(get_patient_sessions_handler))
         .route("/api/patients/:patient_id", get(get_patient_profile_handler).put(update_patient_profile_handler).delete(delete_patient_handler))
+        .route("/api/patients/:patient_id/recording-status", get(get_recording_status_handler))
         .route("/api/patients/:patient_id/connect", post(connect_patient_handler))
         .route("/api/patients/:patient_id/disconnect", post(disconnect_patient_handler))
         .route("/api/doctors/:doctor_id/patients", get(get_doctor_patients_handler))

@@ -27,6 +27,7 @@ fn setup_test_state() -> (AppState, tokio::sync::mpsc::UnboundedReceiver<DeviceP
     let state = AppState {
         pool,
         mqtt_clients,
+        clients: ecg_backend::network::websocket::ClientList::default(),
         pacer_tx,
         db_tx,
         jwt_secret: "test_jwt_secret_key_extremely_long_and_secure".to_string(),
@@ -122,6 +123,7 @@ async fn test_db_worker_session_writing() {
         message_id: "msg_001".to_string(),
         device_id: "device01".to_string(),
         session_id: "session_integration_test".to_string(),
+        patient_id: None,
         frame_id: "frame_001".to_string(),
         created_at: "2026-08-10T10:00:00+07:00".to_string(),
         sampling_rate_hz: 250.0,
@@ -197,6 +199,7 @@ async fn test_pacer_streaming() {
         message_id: "pacer_msg_001".to_string(),
         device_id: "device01".to_string(),
         session_id: "session_pacer".to_string(),
+        patient_id: None,
         frame_id: "frame_001".to_string(),
         created_at: "2026-08-10T10:00:00+07:00".to_string(),
         sampling_rate_hz: 250.0,

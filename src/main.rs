@@ -97,6 +97,7 @@ async fn main() {
     let app_state = api::routes::AppState {
         pool: pool.clone(),
         mqtt_clients: mqtt_clients.clone(),
+        clients: clients.clone(),
         pacer_tx: pacer_tx.clone(),
         db_tx: db_tx.clone(),
         jwt_secret: config.jwt_secret.clone(),

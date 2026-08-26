@@ -84,6 +84,13 @@ pub fn run_migrations(conn: &Connection, admin_email: &str, admin_password: &str
             FOREIGN KEY(patient_id) REFERENCES patients(id)
         );
 
+        CREATE TABLE IF NOT EXISTS recording_states (
+            patient_id TEXT PRIMARY KEY,
+            device_id TEXT NOT NULL,
+            active INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        );
+
         CREATE TABLE IF NOT EXISTS frame_records (
             id TEXT PRIMARY KEY,
             session_id TEXT,
