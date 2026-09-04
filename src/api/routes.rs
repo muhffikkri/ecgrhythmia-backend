@@ -211,12 +211,8 @@ pub struct UpdateDoctorProfileRequest {
 pub struct UpdatePatientProfileRequest {
     pub first_name: String,
     pub last_name: String,
-<<<<<<< HEAD
-    pub age: String,
-=======
     pub date_of_birth: String,
     pub gender: Option<String>,
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
     pub profile_photo: Option<String>,
 }
 
@@ -468,24 +464,6 @@ async fn get_admin_users_handler(
     State(state): State<AppState>,
     Query(params): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
-<<<<<<< HEAD
-    let page: i64 = params.get("page").and_then(|v| v.parse().ok()).unwrap_or(1);
-    let limit: i64 = params.get("limit").and_then(|v| v.parse().ok()).unwrap_or(10);
-    let role_filter = params.get("role").cloned();
-    
-    let (users, total) = get_admin_users(page, limit, role_filter, &state.pool).await;
-    let total_pages = (total as f64 / limit as f64).ceil() as i64;
-    
-    Json(PaginatedResponse {
-        data: users,
-        pagination: PaginationInfo {
-            total,
-            page,
-            limit,
-            total_pages,
-        }
-    })
-=======
     let role_filter = params.get("role").cloned();
     let page: usize = params.get("page").and_then(|p| p.parse().ok()).unwrap_or(1);
     let limit: usize = params.get("limit").and_then(|l| l.parse().ok()).unwrap_or(100);
@@ -522,7 +500,6 @@ async fn admin_sync_handler(
             }))
         )
     }
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
 }
 
 async fn impersonate_handler(
@@ -802,24 +779,6 @@ async fn device_command_handler(
         }
     }
 
-<<<<<<< HEAD
-    // Query mqtt_topic from db
-    let db_topic_record = sqlx::query!("SELECT mqtt_topic FROM devices WHERE id = $1", device_id)
-        .fetch_one(&state.pool).await.ok();
-        
-    let base_topic = if let Some(record) = db_topic_record {
-        record.mqtt_topic.unwrap_or_else(|| format!("ecgrhythmia/{}", device_id))
-    } else {
-        format!("ecgrhythmia/{}", device_id)
-    };
-    
-    let topic = format!("{}/command", base_topic);
-    let clients = state.mqtt_clients.read().await;
-    
-    if let Some(client) = clients.get(&device_id) {
-        let payload = cmd.command.clone();
-        if let Err(e) = client.clone().publish(&topic, rumqttc::QoS::AtLeastOnce, false, payload) {
-=======
     // Dapatkan ID asli dan topic dari database
     let (true_id, mut topic) = if let Ok(conn) = state.pool.get() {
         conn.query_row(
@@ -846,7 +805,6 @@ async fn device_command_handler(
     // Cari berdasarkan true_id (karena main.rs sekarang menyimpan menggunakan id)
     if let Some(client) = clients.get(&true_id) {
         if let Err(e) = client.clone().publish(publish_topic, rumqttc::QoS::AtLeastOnce, false, cmd.command) {
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
             (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": format!("Gagal mengirim perintah: {}", e)})))
         } else {
             info!(device_id = %device_id, topic = %topic, command = %cmd.command, "Berhasil mengirim perintah MQTT ke perangkat");
@@ -886,12 +844,6 @@ async fn get_sessions_from_db(
     let mut actual_doc_id = None;
     let mut is_doctor_filtered = false;
     
-<<<<<<< HEAD
-    if let Some(did) = filter_doctor_id {
-        is_doctor_filtered = true;
-        match sqlx::query!("SELECT id FROM doctors WHERE id = $1 OR account_id = $1", did).fetch_one(pool).await {
-            Ok(r) => actual_doc_id = Some(r.id),
-=======
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM accounts WHERE email = ?1",
         params![req.email],
@@ -1056,7 +1008,6 @@ fn get_sessions_from_db(filter_patient_id: Option<String>, pool: &DbPool) -> Vec
 
         let mut stmt = match conn.prepare(query) {
             Ok(s) => s,
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
             Err(e) => {
                 tracing::error!("Failed to find doctor for id {}: {}", did, e);
             }
@@ -1170,56 +1121,6 @@ async fn get_admin_stats(pool: &PgPool) -> AdminStats {
     stats
 }
 
-<<<<<<< HEAD
-async fn get_admin_users(page: i64, limit: i64, role_filter: Option<String>, pool: &PgPool) -> (Vec<AdminUser>, i64) {
-    let offset = (page - 1) * limit;
-    let mut total;
-    
-    if let Some(r) = role_filter {
-        total = sqlx::query!("SELECT COUNT(*) FROM accounts WHERE role = $1", r).fetch_one(pool).await.map(|row| row.count.unwrap_or(0)).unwrap_or(0);
-        if r == "pasien" {
-            let users = sqlx::query!(
-                "SELECT p.id, a.id as account_id, p.first_name || ' ' || p.last_name as name, a.role, COALESCE(a.status, 'Offline') as status, a.created_at, p.primary_doctor_id as connected_doctor_id, p.device_id as connected_device_id, a.profile_photo
-                 FROM patients p JOIN accounts a ON p.account_id = a.id
-                 WHERE a.role = 'pasien'
-                 ORDER BY a.created_at DESC LIMIT $1 OFFSET $2", limit, offset
-            ).fetch_all(pool).await.unwrap_or_default()
-            .into_iter().map(|row| AdminUser {
-                id: row.id, account_id: row.account_id, name: row.name.unwrap_or_default(), role: row.role, status: row.status.unwrap_or_default(), 
-                registered_at: row.created_at.map(|t| t.to_string()), connected_doctor_id: row.connected_doctor_id, connected_device_id: row.connected_device_id, profile_photo: row.profile_photo
-            }).collect();
-            return (users, total);
-        } else if r == "dokter" {
-            let users = sqlx::query!(
-                "SELECT d.id, a.id as account_id, d.first_name || ' ' || d.last_name as name, a.role, COALESCE(a.status, 'Offline') as status, a.created_at, NULL as connected_doctor_id, NULL as connected_device_id, a.profile_photo
-                 FROM doctors d JOIN accounts a ON d.account_id = a.id
-                 WHERE a.role = 'dokter'
-                 ORDER BY a.created_at DESC LIMIT $1 OFFSET $2", limit, offset
-            ).fetch_all(pool).await.unwrap_or_default()
-            .into_iter().map(|row| AdminUser {
-                id: row.id, account_id: row.account_id, name: row.name.unwrap_or_default(), role: row.role, status: row.status.unwrap_or_default(), 
-                registered_at: row.created_at.map(|t| t.to_string()), connected_doctor_id: row.connected_doctor_id, connected_device_id: row.connected_device_id, profile_photo: row.profile_photo
-            }).collect();
-            return (users, total);
-        }
-    }
-    
-    total = sqlx::query!("SELECT COUNT(*) FROM accounts").fetch_one(pool).await.map(|r| r.count.unwrap_or(0)).unwrap_or(0);
-    
-    let users = sqlx::query!(
-        "SELECT p.id, a.id as account_id, p.first_name || ' ' || p.last_name as name, a.role, COALESCE(a.status, 'Offline') as status, a.created_at, p.primary_doctor_id as connected_doctor_id, p.device_id as connected_device_id, a.profile_photo
-         FROM patients p JOIN accounts a ON p.account_id = a.id
-         UNION ALL
-         SELECT d.id, a.id as account_id, d.first_name || ' ' || d.last_name as name, a.role, COALESCE(a.status, 'Offline') as status, a.created_at, NULL as connected_doctor_id, NULL as connected_device_id, a.profile_photo
-         FROM doctors d JOIN accounts a ON d.account_id = a.id
-         ORDER BY created_at DESC LIMIT $1 OFFSET $2", limit, offset
-    ).fetch_all(pool).await.unwrap_or_default()
-    .into_iter().map(|row| AdminUser {
-        id: row.id.unwrap_or_default(), account_id: row.account_id.unwrap_or_default(), name: row.name.unwrap_or_default(), role: row.role.unwrap_or_default(), status: row.status.unwrap_or_default(), 
-        registered_at: row.created_at.map(|t| t.to_string()), connected_doctor_id: row.connected_doctor_id, connected_device_id: row.connected_device_id, profile_photo: row.profile_photo
-    }).collect();
-    
-=======
 fn get_admin_users_filtered(pool: &DbPool, role_filter: Option<String>, page: usize, limit: usize) -> (Vec<AdminUser>, usize) {
     let mut users = Vec::new();
     let mut total = 0usize;
@@ -1263,7 +1164,6 @@ fn get_admin_users_filtered(pool: &DbPool, role_filter: Option<String>, page: us
             }
         }
     }
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
     (users, total)
 }
 
@@ -1363,10 +1263,6 @@ async fn update_patient_profile(patient_id: &str, req: UpdatePatientProfileReque
         }
     }
 
-<<<<<<< HEAD
-    sqlx::query!("UPDATE patients SET first_name = $1, last_name = $2, age = $3 WHERE id = $4", req.first_name, req.last_name, req.age.parse::<i32>().unwrap_or(0), actual_patient_id)
-        .execute(pool).await.map_err(|e| e.to_string())?;
-=======
     if let Some(gender) = req.gender {
         conn.execute(
             "UPDATE patients SET first_name = ?1, last_name = ?2, date_of_birth = ?3, gender = ?4 WHERE id = ?5",
@@ -1378,7 +1274,6 @@ async fn update_patient_profile(patient_id: &str, req: UpdatePatientProfileReque
             params![req.first_name, req.last_name, date_of_birth, patient_id]
         ).map_err(|e| e.to_string())?;
     }
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
 
     sqlx::query!("UPDATE accounts SET profile_photo = $1 WHERE id = $2", final_photo_url, account_id)
         .execute(pool).await.map_err(|e| e.to_string())?;
@@ -2217,17 +2112,6 @@ pub fn create_router(state: AppState) -> Router {
             "https://www.ecgrhythmia.cloud".parse::<HeaderValue>().unwrap(),
             "http://localhost:5173".parse::<HeaderValue>().unwrap(),
         ])
-<<<<<<< HEAD
-        .allow_methods([Method::GET, Method::POST, Method::PUT, Method::DELETE, Method::OPTIONS])
-        .allow_headers([header::CONTENT_TYPE, header::AUTHORIZATION, header::ACCEPT])
-        .allow_credentials(true);
-
-    Router::new()
-        .route("/api/auth/me", get(auth_me_handler))
-        .route("/api/auth/register_profile", post(register_profile_handler))
-        .route("/api/auth/register", post(admin_register_handler))
-        .route("/api/sessions", get(get_sessions_handler))
-=======
         .allow_methods([
             Method::GET,
             Method::POST,
@@ -2251,7 +2135,6 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/sessions", get(get_sessions_handler).post(create_session_handler))
         .route("/api/sessions/upload", post(upload_session_handler).layer(DefaultBodyLimit::max(50 * 1024 * 1024)))
         .route("/api/sessions/:session_id", put(edit_session_handler).delete(delete_session_handler))
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
         .route("/api/devices", get(get_devices_handler))
         .route("/api/admin/stats", get(get_admin_stats_handler))
         .route("/api/admin/users", get(get_admin_users_handler))
@@ -2267,15 +2150,9 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/patients/:patient_id/disconnect", post(disconnect_patient_handler))
         .route("/api/doctors/:doctor_id/patients", get(get_doctor_patients_handler))
         .route("/api/doctors/:doctor_id", get(get_doctor_profile_handler).put(update_doctor_profile_handler))
-<<<<<<< HEAD
-        .route("/api/doctors/impersonate/:target_id", post(doctor_impersonate_handler))
-        .route("/api/records/:session_id", get(get_record_handler))
-        .route("/api/sessions/:session_id/ecg_paper", post(upload_ecg_paper_handler).delete(delete_ecg_paper_handler))
-=======
         .route("/api/records", post(create_record_handler))
         .route("/api/records/:session_id", get(get_record_handler))
         .route("/api/records/:session_id/download", get(download_record_handler))
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
         .route("/api/devices/:device_id/command", post(device_command_handler))
         .route("/api/devices/:device_id/assign", post(assign_device_handler))
         .route("/api/frames", post(frame_preregister_handler))
@@ -2286,87 +2163,3 @@ pub fn create_router(state: AppState) -> Router {
         .layer(cors)
         .with_state(state)
 }
-<<<<<<< HEAD
-
-
-#[derive(Serialize)]
-pub struct UploadResponse {
-    pub success: bool,
-    pub path: Option<String>,
-    pub message: Option<String>,
-}
-
-pub async fn upload_ecg_paper_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-    mut multipart: Multipart,
-) -> impl IntoResponse {
-    while let Some(field) = multipart.next_field().await.unwrap_or(None) {
-        if field.name() == Some("paper") {
-            let data = match field.bytes().await {
-                Ok(d) => d,
-                Err(_) => return (StatusCode::BAD_REQUEST, Json(UploadResponse { success: false, path: None, message: Some("Failed to read file data".to_string()) })),
-            };
-
-            // Hapus file lama jika ada
-            if let Ok(record) = sqlx::query!("SELECT ecg_paper FROM sessions WHERE id = $1", session_id).fetch_one(&state.pool).await {
-                if let Some(old_path) = record.ecg_paper {
-                    if let Some(filename) = old_path.split('/').last() {
-                        let old_file_path = format!("uploads/ecg_papers/{}", filename);
-                        let _ = tokio::fs::remove_file(&old_file_path).await;
-                    }
-                }
-            }
-
-            let file_name = format!("{}_{}.jpg", session_id, uuid::Uuid::new_v4());
-            let file_path = format!("uploads/ecg_papers/{}", file_name);
-            let public_path = format!("/uploads/ecg_papers/{}", file_name);
-
-            match tokio::fs::write(&file_path, &data).await {
-                Ok(_) => {
-                    let update_result = sqlx::query!(
-                        "UPDATE sessions SET ecg_paper = $1 WHERE id = $2",
-                        public_path,
-                        session_id
-                    ).execute(&state.pool).await;
-
-                    if update_result.is_ok() {
-                        return (StatusCode::OK, Json(UploadResponse { success: true, path: Some(public_path), message: None }));
-                    } else {
-                        return (StatusCode::INTERNAL_SERVER_ERROR, Json(UploadResponse { success: false, path: None, message: Some("Failed to update database".to_string()) }));
-                    }
-                }
-                Err(_) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(UploadResponse { success: false, path: None, message: Some("Failed to save file".to_string()) })),
-            }
-        }
-    }
-    (StatusCode::BAD_REQUEST, Json(UploadResponse { success: false, path: None, message: Some("No file uploaded".to_string()) }))
-}
-
-pub async fn delete_ecg_paper_handler(
-    State(state): State<AppState>,
-    AxumPath(session_id): AxumPath<String>,
-) -> impl IntoResponse {
-    // Hapus file lama jika ada
-    if let Ok(record) = sqlx::query!("SELECT ecg_paper FROM sessions WHERE id = $1", session_id).fetch_one(&state.pool).await {
-        if let Some(old_path) = record.ecg_paper {
-            if let Some(filename) = old_path.split('/').last() {
-                let old_file_path = format!("uploads/ecg_papers/{}", filename);
-                let _ = tokio::fs::remove_file(&old_file_path).await;
-            }
-        }
-    }
-
-    let update_result = sqlx::query!(
-        "UPDATE sessions SET ecg_paper = NULL WHERE id = $1",
-        session_id
-    ).execute(&state.pool).await;
-
-    if update_result.is_ok() {
-        (StatusCode::OK, Json(UploadResponse { success: true, path: None, message: None }))
-    } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, Json(UploadResponse { success: false, path: None, message: Some("Failed to update database".to_string()) }))
-    }
-}
-=======
->>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
