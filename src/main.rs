@@ -1,35 +1,55 @@
 use ecg_backend::{models, network, api, db, config};
 
 use tracing::{info, error, Level};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber::fmt::format::FmtSpan;
+use tracing_subscriber::fmt::time::ChronoLocal;
 
 #[tokio::main]
 async fn main() {
     // 1. Inisialisasi Tracing/Logging
-    let subscriber = FmtSubscriber::builder()
+    let timer = ChronoLocal::new("%Y-%m-%d %H:%M:%S".to_string());
+    
+    let subscriber = tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
+        .with_timer(timer)
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_span_events(FmtSpan::CLOSE)
         .finish();
+        
     tracing::subscriber::set_global_default(subscriber)
         .expect("Gagal mengatur global default tracing subscriber");
 
+<<<<<<< HEAD
+    // Cetak ASCII Banner
+    println!("\x1b[36m");
+    println!("   ____  ____  ____    ____             _                  _ ");
+    println!("  | ___|/ ___|/ ___|  | __ )  __ _  ___| | _____ _ __   __| |");
+    println!("  |  _|| |   | |  _   |  _ \\ / _` |/ __| |/ / _ \\ '_ \\ / _` |");
+    println!("  | |__| |___| |_| |  | |_) | (_| | (__|   <  __/ | | | (_| |");
+    println!("  |____|\\____|\\____|  |____/ \\__,_|\\___|_|\\_\\___|_| |_|\\__,_|");
+    println!("                                                             ");
+    println!("  [ MEDICAL BACKEND ENGINE - V1.0 ]\x1b[0m\n");
+
+    info!("Memulai inisialisasi sistem medis (Mode Asinkron Axum + PostgreSQL (Supabase))...");
+=======
     info!("=== ecg-backend DIMULAI | v{} ===", env!("CARGO_PKG_VERSION"));
     info!("Memulai inisialisasi sistem medis (Mode Asinkron Axum + SQLite + SQLCipher)...");
+>>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
 
     // 2. Muat Konfigurasi dari berkas .env
     let config = config::AppConfig::load();
 
-    // 3. Inisialisasi Database Pool SQLite dengan enkripsi SQLCipher
-    let pool = db::sqlite::create_pool(&config.db_path, &config.sqlite_key);
+    // 3. Inisialisasi Database Pool PostgreSQL asinkron menggunakan sqlx
+    let pool = db::postgres::create_pool(&config.database_url).await;
 
     // Lakukan auto-migration skema database pada saat startup
-    {
-        let conn = pool.get().expect("Gagal mendapatkan koneksi DB awal untuk migrasi");
-        if let Err(e) = db::sqlite::run_migrations(&conn, &config.default_admin_email, &config.default_admin_password) {
-            error!("Gagal menjalankan auto-migrations database: {}", e);
-            panic!("Database migration failed: {}", e);
-        }
-        info!("Auto-migrations database SQLite berhasil diselesaikan.");
+    if let Err(e) = db::postgres::run_migrations(&pool).await {
+        error!("Gagal menjalankan auto-migrations database: {}", e);
+        panic!("Database migration failed: {}", e);
     }
+    info!("Auto-migrations database PostgreSQL berhasil diselesaikan.");
 
     // 4. Buat daftar klien WebSocket (ClientList) asinkron yang thread-safe
     let clients = network::websocket::ClientList::default();
@@ -38,12 +58,43 @@ async fn main() {
     let pacer_tx = network::pacer::start_pacer(clients.clone());
 
     // 6. Jalankan Background Database Worker untuk menulis data asinkron
-    let db_tx = db::sqlite::start_db_worker(pool.clone(), pacer_tx.clone());
+    let db_tx = db::postgres::start_db_worker(pool.clone(), pacer_tx.clone());
 
     // 7. Load Devices and start MQTT Listeners dynamically
     let mqtt_clients = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
     
     {
+<<<<<<< HEAD
+        if let Ok(devices) = sqlx::query!("SELECT id, name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL")
+            .fetch_all(&pool).await 
+        {
+            for device in devices {
+                if let (Some(broker), Some(port), Some(topic), Some(username), Some(password)) = (
+                    device.mqtt_broker, device.mqtt_port, device.mqtt_topic, device.mqtt_username, device.mqtt_password
+                ) {
+                    let db_tx_clone = db_tx.clone();
+                    let port_u16 = port as u16;
+                    
+                    let client = network::mqtt_listener::start_mqtt_listener(
+                        &broker,
+                        port_u16,
+                        &topic,
+                        &username,
+                        &password,
+                        move |payload_str| {
+                            match serde_json::from_str::<models::device::DevicePayload>(&payload_str) {
+                                Ok(device_payload) => {
+                                    let _ = db_tx_clone.send(device_payload);
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "Gagal mem-parsing payload EKG dari perangkat: {}. Payload: {}",
+                                        e,
+                                        payload_str
+                                    );
+                                }
+                            }
+=======
         if let Ok(conn) = pool.get() {
             if let Ok(mut stmt) = conn.prepare("SELECT id, name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL") {
                 if let Ok(device_iter) = stmt.query_map([], |row| {
@@ -86,8 +137,12 @@ async fn main() {
                             let mut clients_map = mqtt_clients.write().await;
                             // Daftarkan menggunakan ID perangkat agar cocok dengan route parameter API
                             clients_map.insert(id, client);
+>>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
                         }
-                    }
+                    );
+                    
+                    let mut clients_map = mqtt_clients.write().await;
+                    clients_map.insert(device.id, client);
                 }
             }
         }
@@ -100,7 +155,7 @@ async fn main() {
         clients: clients.clone(),
         pacer_tx: pacer_tx.clone(),
         db_tx: db_tx.clone(),
-        jwt_secret: config.jwt_secret.clone(),
+        jwt_secret: config.supabase_jwt_secret.clone(),
         api_url: format!("http://{}:{}", config.host_ip, config.rest_port),
     };
 

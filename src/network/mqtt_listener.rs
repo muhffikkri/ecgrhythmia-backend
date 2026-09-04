@@ -60,14 +60,19 @@ where
                     info!(topic = %topic_name, "Berhasil berlangganan secara resmi ke topik");
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
-                    info!(
-                        payload_len = publish.payload.len(),
-                        topic = %publish.topic,
-                        "Menerima data payload dari topik"
-                    );
                     if let Ok(payload_str) = String::from_utf8(publish.payload.to_vec()) {
+                        if serde_json::from_str::<serde_json::Value>(&payload_str).is_err() {
+                            info!("Menerima paket sensor EKG (Invalid JSON format)");
+                        }
+                        
                         // Teruskan pesan JSON murni ke callback WebSocket
                         on_message(payload_str);
+                    } else {
+                        info!(
+                            payload_len = publish.payload.len(),
+                            topic = %publish.topic,
+                            "Menerima data payload dari topik (bukan format teks)"
+                        );
                     }
                 }
                 Err(e) => {

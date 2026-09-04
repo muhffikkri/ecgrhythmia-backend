@@ -250,6 +250,107 @@ async fn test_pacer_streaming() {
 }
 
 #[tokio::test]
+<<<<<<< HEAD
+async fn test_doctor_impersonate() {
+    let (state, _pacer_rx, _db_rx) = setup_test_state();
+    let app = ecg_backend::api::routes::create_router(state);
+
+    // 1. Register Dokter
+    let doc_reg = RegisterRequest {
+        role: "dokter".to_string(),
+        email: "doctor@test.com".to_string(),
+        password: "password123".to_string(),
+        first_name: "Dr. House".to_string(),
+        last_name: "MD".to_string(),
+        date_of_birth: None,
+        gender: None,
+    };
+    let doc_req_body = serde_json::to_vec(&doc_reg).unwrap();
+    let _ = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("Content-Type", "application/json")
+            .body(Body::from(doc_req_body))
+            .unwrap(),
+    ).await.unwrap();
+
+    // 2. Register Pasien
+    let pat_reg = RegisterRequest {
+        role: "pasien".to_string(),
+        email: "patient@test.com".to_string(),
+        password: "password123".to_string(),
+        first_name: "John".to_string(),
+        last_name: "Doe".to_string(),
+        date_of_birth: Some("1995-05-15".to_string()),
+        gender: Some("L".to_string()),
+    };
+    let pat_req_body = serde_json::to_vec(&pat_reg).unwrap();
+    let _ = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/register")
+            .header("Content-Type", "application/json")
+            .body(Body::from(pat_req_body))
+            .unwrap(),
+    ).await.unwrap();
+
+    // 3. Login Dokter & Get Token
+    let doc_login = LoginRequest {
+        email: "doctor@test.com".to_string(),
+        password: "password123".to_string(),
+        role: Some("dokter".to_string()),
+    };
+    let doc_login_body = serde_json::to_vec(&doc_login).unwrap();
+    let login_resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("Content-Type", "application/json")
+            .body(Body::from(doc_login_body))
+            .unwrap(),
+    ).await.unwrap();
+    let body_bytes = axum::body::to_bytes(login_resp.into_body(), 1024 * 10).await.unwrap();
+    let login_res: AuthResponse = serde_json::from_slice(&body_bytes).unwrap();
+    let doc_token = login_res.token.unwrap();
+
+    // 4. Login Pasien untuk mendapatkan patient_id
+    let pat_login = LoginRequest {
+        email: "patient@test.com".to_string(),
+        password: "password123".to_string(),
+        role: Some("pasien".to_string()),
+    };
+    let pat_login_body = serde_json::to_vec(&pat_login).unwrap();
+    let pat_login_resp = app.clone().oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/auth/login")
+            .header("Content-Type", "application/json")
+            .body(Body::from(pat_login_body))
+            .unwrap(),
+    ).await.unwrap();
+    let body_bytes_pat = axum::body::to_bytes(pat_login_resp.into_body(), 1024 * 10).await.unwrap();
+    let pat_login_res: AuthResponse = serde_json::from_slice(&body_bytes_pat).unwrap();
+    let patient_id = pat_login_res.user_id.unwrap();
+
+    // 5. Test Impersonation Route using Doctor Token
+    let imp_resp = app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri(format!("/api/doctors/impersonate/{}", patient_id))
+            .header("Authorization", format!("Bearer {}", doc_token))
+            .body(Body::empty())
+            .unwrap(),
+    ).await.unwrap();
+
+    assert_eq!(imp_resp.status(), StatusCode::OK);
+    let imp_body_bytes = axum::body::to_bytes(imp_resp.into_body(), 1024 * 10).await.unwrap();
+    let imp_res: AuthResponse = serde_json::from_slice(&imp_body_bytes).unwrap();
+    
+    assert!(imp_res.success);
+    assert_eq!(imp_res.role.unwrap(), "pasien");
+    assert!(imp_res.token.is_some());
+=======
 async fn test_ekg_crud_endpoints() {
     let (state, _pacer_rx, _db_rx) = setup_test_state();
     let app = ecg_backend::api::routes::create_router(state.clone());
@@ -527,4 +628,5 @@ async fn test_db_sync_not_configured() {
     let result = ecg_backend::db::sync::sync_databases(&state.pool);
     assert!(result.is_err());
     assert_eq!(result.unwrap_err(), "DATABASE_URL tidak diatur di file .env");
+>>>>>>> d4e4ff69c48c853c58f915b255502ea5f0968312
 }
