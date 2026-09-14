@@ -1,10 +1,5 @@
-use axum::{
-    async_trait,
-    extract::FromRequestParts,
-    http::request::Parts,
-    http::StatusCode,
-};
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
+use axum::{async_trait, extract::FromRequestParts, http::request::Parts, http::StatusCode};
+use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,18 +26,25 @@ where
 
         let token = match auth_header {
             Some(header) if header.starts_with("Bearer ") => &header[7..],
-            _ => return Err((StatusCode::UNAUTHORIZED, "Missing or invalid Authorization header".to_string())),
+            _ => {
+                return Err((
+                    StatusCode::UNAUTHORIZED,
+                    "Missing or invalid Authorization header".to_string(),
+                ))
+            }
         };
 
         // Karena kita tidak memiliki akses langsung ke AppState di sini dengan mudah jika kita
-        // tidak ingin membuat extractor yang spesifik ke state, kita bisa mengambil rahasianya 
+        // tidak ingin membuat extractor yang spesifik ke state, kita bisa mengambil rahasianya
         // langsung dari env untuk middleware JWT, atau kita bisa menggunakan Extension.
         // Di sini kita akan menggunakan env::var.
-        let jwt_secret = std::env::var("SUPABASE_JWT_SECRET")
-            .unwrap_or_else(|_| String::new());
+        let jwt_secret = std::env::var("SUPABASE_JWT_SECRET").unwrap_or_else(|_| String::new());
 
         if jwt_secret.is_empty() {
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, "JWT secret not configured".to_string()));
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "JWT secret not configured".to_string(),
+            ));
         }
 
         let mut validation = Validation::new(Algorithm::HS256);
@@ -52,7 +54,8 @@ where
             token,
             &DecodingKey::from_secret(jwt_secret.as_bytes()),
             &validation,
-        ).map_err(|e| {
+        )
+        .map_err(|e| {
             tracing::error!("JWT Validation Error: {}", e);
             (StatusCode::UNAUTHORIZED, "Invalid token".to_string())
         })?;
