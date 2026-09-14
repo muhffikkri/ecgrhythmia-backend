@@ -1,61 +1,47 @@
-use ecg_backend::{config, db};
+use ecg_backend::db::postgres;
 use std::process::exit;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("=== Memuat konfigurasi dan membuka database ===");
-    let app_config = config::AppConfig::load();
-    let pool = db::sqlite::create_pool(&app_config.db_path, &app_config.sqlite_key);
-
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Gagal mendapatkan koneksi ke database: {}", e);
-            exit(1);
-        }
-    };
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        eprintln!("DATABASE_URL tidak diatur di environment / .env");
+        exit(1);
+    });
+    let pool = postgres::create_pool(&database_url).await;
 
     println!("\n=== DAFTAR PASIEN (10 Terbaru) ===");
-    {
-        let mut stmt = conn.prepare("SELECT id, first_name, last_name FROM patients ORDER BY id DESC LIMIT 10").unwrap();
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let fname: String = row.get(1)?;
-            let lname: String = row.get(2)?;
-            Ok(format!("{} - {} {}", id, fname, lname))
-        }).unwrap();
-        for row in rows {
-            println!("{}", row.unwrap());
-        }
+    let rows =
+        sqlx::query!("SELECT id, first_name, last_name FROM patients ORDER BY id DESC LIMIT 10")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+    for row in rows {
+        println!("{} - {} {}", row.id, row.first_name, row.last_name);
     }
 
     println!("\n=== DAFTAR SESI (10 Terbaru) ===");
-    {
-        let mut stmt = conn.prepare("SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 10").unwrap();
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let patient_id: Option<String> = row.get(1)?;
-            let started_at: String = row.get(2)?;
-            let file_path: String = row.get(3)?;
-            Ok(format!("{} | Pasien: {} | Mulai: {} | File: {}", id, patient_id.unwrap_or_else(|| "NONE".to_string()), started_at, file_path))
-        }).unwrap();
-        for row in rows {
-            println!("{}", row.unwrap());
-        }
+    let rows = sqlx::query!("SELECT id, patient_id, started_at, file_path FROM sessions ORDER BY started_at DESC LIMIT 10")
+        .fetch_all(&pool).await.unwrap_or_default();
+    for row in rows {
+        let pid = row.patient_id.unwrap_or_else(|| "NONE".to_string());
+        let fp = row.file_path.unwrap_or_else(|| "NONE".to_string());
+        println!(
+            "{} | Pasien: {} | Mulai: {} | File: {}",
+            row.id, pid, row.started_at, fp
+        );
     }
 
     println!("\n=== DAFTAR DEVICES ===");
-    {
-        let mut stmt = conn.prepare("SELECT id, name, mqtt_topic, mqtt_broker, mqtt_port FROM devices").unwrap();
-        let rows = stmt.query_map([], |row| {
-            let id: String = row.get(0)?;
-            let name: String = row.get(1)?;
-            let topic: Option<String> = row.get(2)?;
-            let broker: Option<String> = row.get(3)?;
-            let port: Option<u16> = row.get(4)?;
-            Ok(format!("ID: {} | Name: {} | Topic: {} | Broker: {:?} | Port: {:?}", id, name, topic.unwrap_or_else(|| "NONE".to_string()), broker, port))
-        }).unwrap();
-        for row in rows {
-            println!("{}", row.unwrap());
-        }
+    let rows = sqlx::query!("SELECT id, name, mqtt_topic, mqtt_broker, mqtt_port FROM devices")
+        .fetch_all(&pool)
+        .await
+        .unwrap_or_default();
+    for row in rows {
+        let topic = row.mqtt_topic.unwrap_or_else(|| "NONE".to_string());
+        println!(
+            "ID: {} | Name: {} | Topic: {} | Broker: {:?} | Port: {:?}",
+            row.id, row.name, topic, row.mqtt_broker, row.mqtt_port
+        );
     }
 }

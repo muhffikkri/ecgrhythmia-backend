@@ -1,21 +1,17 @@
-use ecg_backend::{config, db};
-use rusqlite::params;
+use ecg_backend::db::postgres;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::process::exit;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     println!("=== repair_sessions: Memperbaiki sesi yang belum tercatat di database ===");
-    let app_config = config::AppConfig::load();
-    let pool = db::sqlite::create_pool(&app_config.db_path, &app_config.sqlite_key);
 
-    let conn = match pool.get() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("Gagal mendapatkan koneksi ke database: {}", e);
-            exit(1);
-        }
-    };
+    let database_url = std::env::var("DATABASE_URL").unwrap_or_else(|_| {
+        eprintln!("DATABASE_URL tidak diatur di environment / .env");
+        exit(1);
+    });
+    let pool = postgres::create_pool(&database_url).await;
 
     let records_dir = "records";
     let entries = match fs::read_dir(records_dir) {
@@ -47,13 +43,12 @@ fn main() {
         checked += 1;
 
         // Cek apakah session sudah ada di database
-        let exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sessions WHERE id = ?1)",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .unwrap_or(false);
+        let exists: bool =
+            sqlx::query_scalar::<_, bool>("SELECT EXISTS(SELECT 1 FROM sessions WHERE id = $1)")
+                .bind(&session_id)
+                .fetch_one(&pool)
+                .await
+                .unwrap_or(false);
 
         if exists {
             println!("[OK]      {} sudah ada di database", session_id);
@@ -84,9 +79,15 @@ fn main() {
             }
         };
 
-        let device_id = parsed["device_id"].as_str().unwrap_or("device01").to_string();
+        let device_id = parsed["device_id"]
+            .as_str()
+            .unwrap_or("device01")
+            .to_string();
         let patient_id = parsed["patient_id"].as_str().map(|s| s.to_string());
-        let created_at = parsed["created_at"].as_str().unwrap_or("1970-01-01T00:00:00Z").to_string();
+        let created_at = parsed["created_at"]
+            .as_str()
+            .unwrap_or("1970-01-01T00:00:00Z")
+            .to_string();
 
         println!(
             "[REPAIR]  {} | device={} | patient={:?} | started={}",
@@ -94,44 +95,52 @@ fn main() {
         );
 
         // Pastikan device ada
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO devices (id, name) VALUES (?1, ?1)",
-            params![device_id],
-        );
+        let _ = sqlx::query(
+            "INSERT INTO devices (id, name) VALUES ($1, $1) ON CONFLICT (id) DO NOTHING",
+        )
+        .bind(&device_id)
+        .execute(&pool)
+        .await;
 
         // Pastikan patient ada (jika session punya patient_id)
         if let Some(ref pid) = patient_id {
-            let patient_exists: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM patients WHERE id = ?1)",
-                    params![pid],
-                    |row| row.get(0),
-                )
-                .unwrap_or(false);
+            let patient_exists: bool = sqlx::query_scalar::<_, bool>(
+                "SELECT EXISTS(SELECT 1 FROM patients WHERE id = $1)",
+            )
+            .bind(pid)
+            .fetch_one(&pool)
+            .await
+            .unwrap_or(false);
 
             if !patient_exists {
                 eprintln!(
                     "[WARN]    patient_id '{}' tidak ada di DB. Memasukkan data dummy.",
                     pid
                 );
-                let _ = conn.execute(
-                    "INSERT OR IGNORE INTO patients (id, first_name, last_name, date_of_birth, gender) VALUES (?1, 'Unknown', 'Patient', '1900-01-01', 'U')",
-                    params![pid],
-                );
+                let _ = sqlx::query(
+                    "INSERT INTO patients (id, first_name, last_name, date_of_birth, gender) VALUES ($1, 'Unknown', 'Patient', '1900-01-01', 'U') ON CONFLICT (id) DO NOTHING"
+                ).bind(pid).execute(&pool).await;
             }
         }
 
         // Insert session
-        match conn.execute(
-            "INSERT OR IGNORE INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES (?1, ?2, ?3, ?4, ?5)",
-            params![session_id, device_id, patient_id, created_at, file_path_str],
-        ) {
-            Ok(rows) if rows > 0 => {
+        match sqlx::query(
+            "INSERT INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO NOTHING"
+        )
+            .bind(&session_id)
+            .bind(&device_id)
+            .bind(&patient_id)
+            .bind(&created_at)
+            .bind(&file_path_str)
+            .execute(&pool)
+            .await
+        {
+            Ok(rows) if rows.rows_affected() > 0 => {
                 println!("[SUCCESS] Session {} berhasil ditambahkan ke database!", session_id);
                 repaired += 1;
             }
             Ok(_) => {
-                println!("[IGNORE]  Session {} sudah ada (INSERT OR IGNORE).", session_id);
+                println!("[IGNORE]  Session {} sudah ada (INSERT ON CONFLICT DO NOTHING).", session_id);
                 skipped += 1;
             }
             Err(e) => {
