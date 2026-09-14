@@ -1,39 +1,60 @@
+use crate::models::device::DevicePayload;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
+use sqlx::PgPool;
 use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
-use sqlx::{PgPool, postgres::PgPoolOptions};
+use std::str::FromStr;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use crate::models::device::DevicePayload;
-use tracing::{info, error};
+use tracing::{error, info};
 
 pub async fn create_pool(database_url: &str) -> PgPool {
+    let connect_opts = PgConnectOptions::from_str(database_url)
+        .expect("URL PostgreSQL tidak valid")
+        .statement_cache_capacity(0);
     PgPoolOptions::new()
         .max_connections(5)
-        .connect(database_url)
+        .connect_with(connect_opts)
         .await
         .expect("Gagal terhubung ke Supabase PostgreSQL")
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     let queries = [
-        
-        "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, role TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, profile_photo TEXT, status TEXT DEFAULT 'Offline')",
-        
+        "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT, role TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, profile_photo TEXT, status TEXT DEFAULT 'Offline')",
         "CREATE TABLE IF NOT EXISTS doctors (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
-        
-        "CREATE TABLE IF NOT EXISTS patients (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, age INTEGER NOT NULL, gender TEXT, primary_doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL, device_id TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
-        
+        "CREATE TABLE IF NOT EXISTS patients (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, date_of_birth DATE, age INTEGER DEFAULT 0, gender TEXT, primary_doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL, device_id TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, mqtt_broker TEXT, mqtt_port INTEGER, mqtt_topic TEXT, mqtt_username TEXT, mqtt_password TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
-        
-        "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, patient_id TEXT NOT NULL REFERENCES patients(id) ON DELETE CASCADE, started_at TIMESTAMP WITH TIME ZONE NOT NULL, ended_at TIMESTAMP WITH TIME ZONE, file_path TEXT, ecg_paper TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
-        
-        "CREATE TABLE IF NOT EXISTS frame_records (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, start_time DOUBLE PRECISION NOT NULL, end_time DOUBLE PRECISION NOT NULL, time_interval TEXT NOT NULL, label TEXT NOT NULL, dev_note TEXT, doc_note TEXT, confirmation BOOLEAN DEFAULT NULL, doc_classification TEXT, hidden BOOLEAN DEFAULT FALSE, created_by TEXT REFERENCES accounts(id) ON DELETE SET NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)"
+        "CREATE TABLE IF NOT EXISTS sessions (id TEXT PRIMARY KEY, device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE, patient_id TEXT REFERENCES patients(id) ON DELETE CASCADE, doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL, started_at TIMESTAMP WITH TIME ZONE NOT NULL, ended_at TIMESTAMP WITH TIME ZONE, file_path TEXT, ecg_paper TEXT, dev_note TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
+        "CREATE TABLE IF NOT EXISTS frame_records (id TEXT PRIMARY KEY, session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE, start_time DOUBLE PRECISION DEFAULT 0, end_time DOUBLE PRECISION DEFAULT 0, time_interval TEXT DEFAULT '', label TEXT DEFAULT 'Normal', dev_note TEXT, doc_note TEXT, confirmation BOOLEAN DEFAULT NULL, doc_classification TEXT, hidden BOOLEAN DEFAULT FALSE, created_by TEXT REFERENCES accounts(id) ON DELETE SET NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)"
     ];
 
     for q in queries.iter() {
         sqlx::query(*q).execute(pool).await?;
     }
-    
+
+    // ALTER TABLE ADD COLUMN IF NOT EXISTS untuk evolusi skema pada database yang sudah ada
+    // (CREATE TABLE IF NOT EXISTS tidak akan mengubah tabel eksisting)
+    let alter_queries = [
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_hash TEXT",
+        "ALTER TABLE patients ADD COLUMN IF NOT EXISTS date_of_birth DATE",
+        "ALTER TABLE patients ADD COLUMN IF NOT EXISTS age INTEGER DEFAULT 0",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS dev_note TEXT",
+        "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS ecg_paper TEXT",
+        "ALTER TABLE frame_records ADD COLUMN IF NOT EXISTS end_time DOUBLE PRECISION DEFAULT 0",
+        "ALTER TABLE frame_records ADD COLUMN IF NOT EXISTS time_interval TEXT DEFAULT ''",
+        "ALTER TABLE frame_records ADD COLUMN IF NOT EXISTS label TEXT DEFAULT 'Normal'",
+        "ALTER TABLE frame_records ADD COLUMN IF NOT EXISTS dev_note TEXT",
+        "ALTER TABLE frame_records ADD COLUMN IF NOT EXISTS doc_classification TEXT",
+    ];
+
+    for q in alter_queries.iter() {
+        if let Err(e) = sqlx::query(*q).execute(pool).await {
+            tracing::warn!("ALTER TABLE dilewati ({}): {}", q, e);
+        }
+    }
+
     Ok(())
 }
 
@@ -44,7 +65,7 @@ pub async fn generate_custom_id(pool: &PgPool, table: &str, prefix: &str) -> Str
         "SELECT id FROM {} WHERE id LIKE '{}%' AND LENGTH(id) = {} ORDER BY id DESC LIMIT 1",
         table, prefix, expected_len
     );
-    
+
     // Instead of sqlx::query! macro, we use sqlx::query to allow dynamic SQL strings for this specific helper.
     let res: Result<(String,), _> = sqlx::query_as(&query_str).fetch_one(pool).await;
 
@@ -61,7 +82,10 @@ pub async fn generate_custom_id(pool: &PgPool, table: &str, prefix: &str) -> Str
     format!("{}000000000001", prefix)
 }
 
-pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -> UnboundedSender<DevicePayload> {
+pub fn start_db_worker(
+    pool: PgPool,
+    pacer_tx: UnboundedSender<DevicePayload>,
+) -> UnboundedSender<DevicePayload> {
     let (tx, mut rx) = unbounded_channel::<DevicePayload>();
 
     tokio::spawn(async move {
@@ -76,20 +100,25 @@ pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -
                 id.clone()
             } else {
                 // Try to find the device
-                let dev_res = sqlx::query!("SELECT id FROM devices WHERE name = $1", payload.device_id)
-                    .fetch_one(&pool)
-                    .await;
-                
+                let dev_res =
+                    sqlx::query!("SELECT id FROM devices WHERE name = $1", payload.device_id)
+                        .fetch_one(&pool)
+                        .await;
+
                 match dev_res {
                     Ok(record) => {
                         device_map.insert(payload.device_id.clone(), record.id.clone());
                         record.id
-                    },
+                    }
                     Err(_) => {
                         let new_id = generate_custom_id(&pool, "devices", "dev").await;
-                        if let Err(e) = sqlx::query!("INSERT INTO devices (id, name) VALUES ($1, $2)", new_id, payload.device_id)
-                            .execute(&pool)
-                            .await 
+                        if let Err(e) = sqlx::query!(
+                            "INSERT INTO devices (id, name) VALUES ($1, $2)",
+                            new_id,
+                            payload.device_id
+                        )
+                        .execute(&pool)
+                        .await
                         {
                             error!("[Database] Gagal INSERT device: {}", e);
                             continue;
@@ -105,7 +134,7 @@ pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -
             let ses_res = sqlx::query!("SELECT id FROM sessions WHERE device_id = $1 AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1", dev_id)
                 .fetch_optional(&pool)
                 .await;
-            
+
             let ses_id = match ses_res {
                 Ok(Some(record)) => record.id,
                 _ => {
@@ -148,7 +177,11 @@ pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -
                 }
             }
 
-            let mut file = match OpenOptions::new().create(true).append(true).open(&file_path) {
+            let mut file = match OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&file_path)
+            {
                 Ok(f) => f,
                 Err(e) => {
                     error!("[Database] Gagal membuka file rekaman {}: {}", file_path, e);
@@ -157,7 +190,10 @@ pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -
             };
 
             if let Err(e) = writeln!(file, "{}", json_string) {
-                error!("[Database] Gagal menulis baris ke file {}: {}", file_path, e);
+                error!(
+                    "[Database] Gagal menulis baris ke file {}: {}",
+                    file_path, e
+                );
                 continue;
             }
 
@@ -166,15 +202,15 @@ pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -
             let frame_num = payload.frame_id.parse::<i64>().unwrap_or(1);
             let start_sec = (frame_num - 1) as f64 * duration_s;
             let end_sec = frame_num as f64 * duration_s;
-            
+
             let format_time = |secs: f64| -> String {
                 let m = (secs / 60.0).floor() as i64;
                 let s = (secs % 60.0).floor() as i64;
                 format!("{:02}:{:02}", m, s)
             };
-            
+
             let time_interval = format!("{} - {}", format_time(start_sec), format_time(end_sec));
-            
+
             let mut best_label = "Normal".to_string();
             if let Some(probs) = &payload.prediction.probabilities {
                 if let Some(obj) = probs.as_object() {
@@ -204,5 +240,3 @@ pub fn start_db_worker(pool: PgPool, pacer_tx: UnboundedSender<DevicePayload>) -
 
     tx
 }
-
-
