@@ -30,6 +30,10 @@ Cargo.lock
 *.sqlite
 *.sqlite3
 
+# Python (tooling migrasi data)
+__pycache__/
+*.pyc
+
 # User Generated Data / Runtime Folders
 /uploads/
 /records/

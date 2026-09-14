@@ -3,7 +3,7 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.1.0] - 2026-09-14
 
 ### Ditambahkan
 
@@ -52,3 +52,10 @@ versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - Daftar pengguna admin: konversi `created_at` yang memakai `.map()` pada nilai
   non-`Option` (`registered_at`).
+- Skrip migrasi data kini menangani akun dengan **email yang sama tapi id
+  berbeda** di PostgreSQL (mis. akun admin bawaan). Akun digabung ke id yang
+  sudah ada dan seluruh referensi id di tabel anak (`doctors`, `patients`,
+  `frame_records`) di-remap otomatis, sehingga migrasi tidak lagi gagal dengan
+  `duplicate key value violates unique constraint "accounts_email_key"`.
+
+## [Unreleased]

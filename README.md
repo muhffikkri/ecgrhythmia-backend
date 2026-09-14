@@ -1,5 +1,7 @@
 # ECG Rhythmia - Sinkronisasi & Integrasi Frontend
 
+**Versi rilis saat ini: `v1.1.0`**
+
 Dokumentasi ini berfokus pada integrasi sisi **Frontend (React)** untuk memvisualisasikan data Elektrokardiogram (EKG) secara _real-time_, serta bagaimana frontend melakukan sinkronisasi dengan backend.
 
 > 📄 Riwayat perubahan teknis backend tersedia di **[CHANGELOG.md](./CHANGELOG.md)**.
@@ -16,7 +18,7 @@ Aplikasi frontend (React/TypeScript) bertanggung jawab untuk dua fungsi utama: m
 
 ### 2. Pengambilan Data Dataset (REST API)
 
-- **Koneksi HTTP:** Menggunakan pustaka _fetch_ bawaan peramban atau Axios, frontend melakukan _request_ HTTP `GET` ke REST API backend di `http://127.0.0.1:8081/api/records`.
+- **Koneksi HTTP:** Menggunakan pustaka _fetch_ bawaan peramban atau Axios, frontend melakukan _request_ HTTP `GET` ke REST API backend di `http://127.0.0.1:8080/api/records`.
 - **Fungsi:** Berguna untuk memuat dan menampilkan daftar ketersediaan file CSV dataset (seperti dari folder Chapman, PTB-XL, atau data simulasi Prosim) pada menu navigasi (sidebar/dropdown) di aplikasi React.
 - **CORS Terintegrasi:** REST API sisi server telah dikonfigurasi untuk mengizinkan _Cross-Origin Resource Sharing (CORS)_ untuk domain produksi (`https://ecgrhythmia.cloud`, `https://www.ecgrhythmia.cloud`) dengan metode (`GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`), header (`Content-Type`, `Authorization`, `Accept`), serta memperbolehkan pengiriman kredensial (_allow credentials_).
 
@@ -49,12 +51,13 @@ c:\arrhythmia-detection-dashboard\
 
 ## ⚙️ Cara Setup & Menjalankan Backend (Rust - Production-Ready)
 
-Backend aplikasi ini dibangun menggunakan **Rust** dengan framework web asinkron **Axum**, sistem database connection pooling **r2d2** (terintegrasi SQLite + SQLCipher), dan logging terstruktur menggunakan **tracing**.
+Backend aplikasi ini dibangun menggunakan **Rust** dengan framework web asinkron **Axum**, connection pooling **sqlx** ke **PostgreSQL / Supabase**, dan logging terstruktur menggunakan **tracing**.
 
 ### Persyaratan (Prerequisites)
 
 - **Rust & Cargo**: Instal Rust melalui [rustup.rs](https://rustup.rs/).
-- **SQLite**: Database SQLite tertanam terenkripsi via SQLCipher, tidak memerlukan server terpisah.
+- **PostgreSQL**: Server PostgreSQL aktif (lokal atau Supabase) untuk runtime.
+- **PostgreSQL Client (`psql`)**: Diperlukan untuk migrasi skema manual/skrip.
 
 ### Langkah-langkah Instalasi & Konfigurasi
 
@@ -67,7 +70,7 @@ Backend aplikasi ini dibangun menggunakan **Rust** dengan framework web asinkron
 
    ```env
    HOST_IP=127.0.0.1
-   REST_PORT=8081
+   REST_PORT=8080
    WS_PORT=8080
 
    # PostgreSQL / Supabase (WAJIB - dipakai saat build & runtime)
@@ -84,9 +87,9 @@ Backend aplikasi ini dibangun menggunakan **Rust** dengan framework web asinkron
    MQTT_PASSWORD=
    ```
 
-   _Catatan:_ `DATABASE_URL` yang sama juga dipakai oleh _macro sqlx saat kompilasi_. Jika hanya tersimpan di `.env`, ekspor ke environment sebelum build: `export DATABASE_URL=$(grep ^DATABASE_URL= .env | cut -d= -f2-)`.
+   _Catatan:_ `DATABASE_URL` yang sama juga dipakai oleh _macro sqlx saat kompilasi_. Jika hanya tersimpan di `.env`, ekspor ke environment sebelum build: `export DATABASE_URL=$(grep ^DATABASE_URL= .env | cut -d= -f2-)`, **atau** gunakan offline cache yang sudah di-commit di `.sqlx/`: `SQLX_OFFLINE=true cargo build --release`.
 
-   _Catatan port:_ Jika `REST_PORT` dan `WS_PORT` disamakan, server Axum menyatu pada satu port (REST di `/api`, WebSocket di `/`).
+   _Catatan port:_ Jika `REST_PORT` dan `WS_PORT` disamakan (contoh di atas: `8080`), server Axum menyatu pada satu port — REST API di `/api`, WebSocket di `/` dan `/ws`. Ini mode yang **direkomendasikan untuk produksi/proxy**. Bila memisahkan, REST berjalan di `REST_PORT` dan WebSocket di `WS_PORT`.
 
 3. **Build & Run**:
 
@@ -104,29 +107,47 @@ Aplikasi ini dilengkapi dengan pengujian unit dan pengujian integrasi yang kompr
 
 1. **Unit Tests (Pengujian Unit):**
    - **Config Loader (`src/config.rs`):** Memvalidasi pembacaan berkas `.env` dan fallback nilai default jika variabel tidak tersedia.
-   - **CSV Reader (`src/data/csv_reader.rs`):** Memverifikasi pembacaan dataset EKG statis dan penanganan data kosong atau tidak valid (fallback).
-   - **SQLite Database (`src/db/sqlite.rs`):** Menguji migrasi skema tabel database di memori, registrasi admin/device bawaan, serta kebenaran fungsi generator ID kustom (`generate_custom_id`).
    - **Device Parser (`src/models/device.rs`):** Memverifikasi parsing dan pemetaan JSON payload dari perangkat keras.
+   - **CSV Reader (`src/data/csv_reader.rs`):** Memverifikasi pembacaan dataset EKG statis dan penanganan data kosong atau tidak valid (fallback).
 
 2. **Integration Tests (Pengujian Integrasi - `tests/integration_tests.rs`):**
    - **REST API Integration:** Menyosialisasikan pemanggilan REST API di memori (registrasi, login, dll.) tanpa harus mem-bind socket port riil menggunakan `tower::Service`.
-   - **Database Worker Integration:** Menguji antrean asinkron background writer database worker untuk mencatat sesi secara persisten dan membuat file JSONL rekaman.
+   - **Database Worker Integration:** Menguji antrean asinkron background writer database worker untuk mencatat sesi secara persisten ke `frame_records` dan membuat file JSONL rekaman di `records/`.
    - **ECG Pacer Integration:** Memverifikasi pembagian data (slicing) signal EKG dan broadcast via WebSocket klien.
+   - **Auth Guard:** Verifikasi bahwa endpoint terproteksi (mis. `/api/admin/*`, `/api/sessions`) menolak request tanpa `Authorization: Bearer <token>` yang sah.
+
+   > Integration test memerlukan **PostgreSQL aktif** — set `DATABASE_URL` mengarah ke
+   > database PostgreSQL (lokal/Supabase) sebelum menjalankan `cargo test`.
 
 #### B. Menjalankan Pengujian Manual
 
+> **PENTING — jangan build/migrate terhadap *pooler* Supabase:** macro `sqlx` (query!,
+> query_as!) akan gagal koneksi-pooler dengan error `prepared statement "sqlx_s_*" already
+> exists`. Gunakan salah satu:
+> 1. **PostgreSQL langsung** (bukan pooler) sebagai `DATABASE_URL` saat `cargo check`/`test`, atau
+> 2. **offline cache** yang sudah di-commit di folder `.sqlx/`:
+>    `SQLX_OFFLINE=true cargo test` (tidak memerlukan koneksi DB saat kompilasi).
+
 - **Di Windows (PowerShell):**
   ```powershell
-  $env:OPENSSL_DIR="d:\Project\ecgrhythmia-backend\openssl-custom"; $env:OPENSSL_STATIC="1"; cargo test
+  $env:SQLX_OFFLINE = "true"
+  $env:DATABASE_URL  = "postgresql://postgres@127.0.0.1:5433/ecgdev?sslmode=disable"  # contoh: Postgres lokal
+  cargo test --all-targets
   ```
 - **Di Linux (Terminal):**
   ```bash
-  cargo test
+  export SQLX_OFFLINE=true
+  export DATABASE_URL="postgresql://postgres@127.0.0.1:5432/ecgdev?sslmode=disable"
+  cargo test --all-targets
   ```
+
+  Kumpulan test lengkap juga tersedia sebagai skrip: **Windows** `./scripts/test-all.ps1`
+  dan skema migrasi ulang PostgreSQL **`./scripts/migrate.ps1`**.
 
 ### C. Migrasi dan Test Terpadu (PostgreSQL)
 
-Schema PostgreSQL tersedia sebagai migrasi versioned di `migrations/0001_initial.sql`.
+Schema PostgreSQL tersedia sebagai migrasi versioned di `migrations/0001_initial.sql`
+(skema dasar) dan `migrations/0002_postgres_evolution.sql` (evolusi idempoten).
 Pastikan `DATABASE_URL` berisi connection string PostgreSQL yang valid, lalu jalankan:
 
 ```powershell
@@ -141,19 +162,27 @@ Pastikan `DATABASE_URL` berisi connection string PostgreSQL yang valid, lalu jal
 > 2. **offline cache** yang sudah di-commit di folder `.sqlx/`:
 >    `SQLX_OFFLINE=true cargo build --release` (tanpa memerlukan koneksi DB sama sekali).
 
-Runner tersebut menjalankan migrasi, pemeriksaan formatting, dan seluruh target Rust.
-Gunakan `./scripts/test-all.ps1 -SkipMigration` hanya untuk mengisolasi kegagalan compile/test.
-End-to-end test memerlukan PostgreSQL, MQTT broker, server backend, dan client test; suite E2E otomatis belum tersedia di repository ini.
+Runner `scripts/test-all.ps1` menjalankan migrasi, pemeriksaan formatting, dan seluruh
+target Rust. Gunakan `./scripts/test-all.ps1 -SkipMigration` hanya untuk mengisolasi
+kegagalan compile/test. End-to-end test memerlukan PostgreSQL, MQTT broker, server
+backend, dan client test; suite E2E otomatis belum tersedia di repository ini.
 
 ### D. Migrasi Database Lama (SQLite/SQLCipher) → PostgreSQL/Supabase
 
-> **PENTING (deployment VPS):** Sebelum migrasi, pastikan seluruh perubahan kode "refactor ke PostgreSQL" di repo lokal sudah **di-commit dan di-push** ke `main`. Folder `migrations/`, `scripts/`, dan `src/bin/migrate_db.rs` masih berupa file baru yang belum ter-track dan **tidak ikut ter-pull di VPS**. Setelah push, lakukan `git pull` di VPS.
+> **PENTING (deployment VPS):** Pastikan seluruh perubahan kode "refactor ke PostgreSQL"
+> (termasuk `migrations/`, `scripts/`, `src/bin/`, build offline `.sqlx/`) sudah
+> **di-commit dan di-push** ke cabang `main`, lalu lakukan `git pull` di VPS sebelum memulai.
 
-#### Prasyarat di VPS (Linux)
+#### Prasyarat di VPS (Linux / Debian)
+
+Rust dipaketkan tidak tersedia langsung di Debian; gunakan `rustup`:
+`curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh`
+
+Selain itu, karena kebijakan **PEP 668** di Debian 12+ (`pip` system diblokir), install
+dependensi Python migrasi lewat paket sistem — **jangan** `pip install` ke system:
 
 ```bash
-sudo apt update && sudo apt install -y sqlcipher postgresql-client python3-pip
-python3 -m pip install --user psycopg2-binary
+sudo apt update && sudo apt install -y sqlcipher postgresql-client python3-psycopg2
 ```
 
 #### Langkah Migrasi (satu per satu)
@@ -162,6 +191,7 @@ python3 -m pip install --user psycopg2-binary
    - `DATABASE_URL` (Supabase/PostgreSQL yang sudah ada / baru)
    - `SUPABASE_JWT_SECRET` (dari Supabase Dashboard → Settings → API → JWT Secret)
    - `MQTT_*` (kredensial broker lama/tetap)
+   - `SQLITE_KEY` (kunci SQLCipher database lama, hanya dipakai saat migrasi data)
 
 2. **Jalankan migrasi skema PostgreSQL** (membuat/menyelaraskan tabel tanpa menghapus data):
 
@@ -171,7 +201,10 @@ python3 -m pip install --user psycopg2-binary
    ```
 
 3. **Migrasi data dari `database.db` (SQLCipher) ke PostgreSQL** — otomatis memetakan kolom
-   (timestamp/text, date, umur pasien, bool), idempoten (upsert `ON CONFLICT`):
+   (timestamp/text, date, umur pasien, bool) dan **idempoten** (upsert `ON CONFLICT`).
+   Akun dengan email yang sudah ada di PostgreSQL (mis. akun admin bawaan) otomatis
+   **digabung** (di-remap id-nya) sehingga tidak memicu
+   `duplicate key value violates unique constraint "accounts_email_key"`:
 
    ```bash
    ./scripts/run_migration.sh database.db
@@ -184,8 +217,11 @@ python3 -m pip install --user psycopg2-binary
      --pg "$DATABASE_URL"
    ```
 
+   Cek dulu tanpa menulis data (disarankan): tambahkan `--dry-run` pada perintah manual di atas.
+
 4. **Salin berkas rekaman `records/*.jsonl`** dari server lama (data frame sinyal tidak
-   tersimpan di database, hanya `file_path`-nya):
+   tersimpan di database, hanya `file_path`-nya). Ganti `user@old-server` dengan alamat
+   server lama yang sebenarnya:
 
    ```bash
    rsync -avz user@old-server:/path/ecgrhythmia-backend/records/ records/
@@ -197,6 +233,9 @@ python3 -m pip install --user psycopg2-binary
    psql "$DATABASE_URL" -c "\dt"
    psql "$DATABASE_URL" -c "SELECT (SELECT count(*) FROM accounts) a, (SELECT count(*) FROM patients) p, (SELECT count(*) FROM sessions) s, (SELECT count(*) FROM frame_records) f;"
    ```
+
+   Bandingkan dengan daftar baris yang ditampilkan `run_migration.sh` — jumlahnya harus
+   cocok dengan jumlah di database SQLite lama (lihat juga `--dry-run`).
 
 6. **Build & jalankan server** (pakai offline cache — tidak perlu DB saat kompilasi):
 
@@ -210,32 +249,30 @@ python3 -m pip install --user psycopg2-binary
 > **Regenerasi offline cache `.sqlx/`**: install `cargo install sqlx-cli --no-default-features
 > --features postgres,rustls --version 0.7.4`, hubungkan `DATABASE_URL` ke PostgreSQL **langsung**,
 > lalu `cargo sqlx prepare --workspace -- --all-targets`. Commit hasil folder `.sqlx/`.
+### E. Pengujian & Build Sebelum Rilis (Production)
 
-#### C. Pengujian Otomatis Sebelum Build & Deploy (Sangat Direkomendasikan)
+Urutan yang digunakan untuk menjaga kualitas sebelum kompilasi rilis:
 
-Untuk menjamin tidak ada kode rusak yang masuk ke tahap kompilasi rilis, kami menyediakan skrip otomatisasi **`test_and_build.ps1`** (Windows) dan **`test_and_build.sh`** (Linux). Skrip ini akan melakukan hal berikut secara berurutan:
+1. **Format & static analysis:**
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --all-targets
+   ```
+2. **Seluruh test (unit + integrasi)** terhadap PostgreSQL aktif:
+   ```bash
+   export SQLX_OFFLINE=true
+   export DATABASE_URL="postgresql://postgres@127.0.0.1:5433/ecgdev?sslmode=disable"
+   cargo test --all-targets
+   ```
+   Passed & failed langsung dilaporkan di konsol oleh Cargo.
+3. **Build biner produksi teroptimasi** (`lto`, `strip`, `panic=abort` — lihat
+   `[profile.release]` di `Cargo.toml`):
+   ```bash
+   SQLX_OFFLINE=true cargo build --release
+   ```
 
-1. Menjalankan seluruh pengujian unit & integrasi.
-2. Menganalisis log hasil uji dan **melampirkan laporan jumlah test yang berhasil (passed) dan gagal (failed)** pada konsol.
-3. **Jika ada pengujian yang gagal (atau terjadi error kompilasi):** Skrip akan langsung menghentikan proses (_abort_) untuk mencegah pembangunan biner yang rusak.
-4. **Jika seluruh pengujian lolos:** Skrip melanjutkan dengan mengompilasi biner produksi teroptimasi menggunakan `cargo build --release`.
-
-##### Cara Menjalankan:
-
-- **Di Windows (PowerShell):**
-
-  ```powershell
-  .\test_and_build.ps1
-  ```
-
-  Output biner produksi (`.exe`) akan tersedia di `target\release\ecg-backend.exe`.
-
-- **Di Linux (Terminal):**
-  ```bash
-  chmod +x test_and_build.sh
-  ./test_and_build.sh
-  ```
-  Output biner produksi akan tersedia di `target/release/ecg-backend`.
+- **Di Windows (PowerShell):** output di `target\release\ecg-backend.exe`.
+- **Di Linux:** output di `target/release/ecg-backend`.
 
 ---
 
@@ -255,7 +292,7 @@ Aplikasi menggunakan **PostgreSQL (supaya kompatibel dengan Supabase)** sebagai 
 Backend didesain agar dapat tersinkronisasi mulus dengan aplikasi React (yang telah dikonfigurasi sebagai _Progressive Web App_ / PWA).
 
 1. **Sinkronisasi Data Profil & Riwayat (REST API)**:
-   Setiap kali pengguna melakukan pembaruan profil atau pengaturan perangkat di PWA, frontend mengirimkan _request_ HTTP (seperti `POST` atau `PUT`) ke `http://127.0.0.1:8081/api/...`. Backend SQLite akan langsung menyimpan perubahan ini secara permanen.
+   Setiap kali pengguna melakukan pembaruan profil atau pengaturan perangkat di PWA, frontend mengirimkan _request_ HTTP (seperti `POST` atau `PUT`) ke `http://127.0.0.1:8080/api/...`. Backend PostgreSQL (Supabase) akan langsung menyimpan perubahan ini secara permanen.
 2. **Komunikasi Real-Time (WebSocket)**:
    PWA mengandalkan koneksi persisten ke `ws://127.0.0.1:8080` untuk menerima aliran (_streaming_) grafik detak jantung EKG tanpa _overhead_ (hambatan) koneksi ulang HTTP biasa.
 3. **Mekanisme Fallback (Mode Offline PWA)**:
