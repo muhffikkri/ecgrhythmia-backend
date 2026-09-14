@@ -1,26 +1,30 @@
 # ECG Rhythmia - Sinkronisasi & Integrasi Frontend
 
-Dokumentasi ini berfokus pada integrasi sisi **Frontend (React)** untuk memvisualisasikan data Elektrokardiogram (EKG) secara *real-time*, serta bagaimana frontend melakukan sinkronisasi dengan backend.
+Dokumentasi ini berfokus pada integrasi sisi **Frontend (React)** untuk memvisualisasikan data Elektrokardiogram (EKG) secara _real-time_, serta bagaimana frontend melakukan sinkronisasi dengan backend.
+
+> 📄 Riwayat perubahan teknis backend tersedia di **[CHANGELOG.md](./CHANGELOG.md)**.
 
 ## 💻 Integrasi Frontend (React)
 
-Aplikasi frontend (React/TypeScript) bertanggung jawab untuk dua fungsi utama: memvisualisasikan *streaming* data EKG yang dikirim oleh backend dan memuat daftar dataset (records) yang tersedia.
+Aplikasi frontend (React/TypeScript) bertanggung jawab untuk dua fungsi utama: memvisualisasikan _streaming_ data EKG yang dikirim oleh backend dan memuat daftar dataset (records) yang tersedia.
 
 ### 1. Komunikasi WebSocket (Streaming Real-Time)
+
 - **Koneksi:** Frontend terhubung ke server WebSocket backend pada alamat `ws://127.0.0.1:8080`.
 - **Format Data:** Data diterima dalam format JSON. Struktur data (Payload) dari backend dirancang agar 100% sejajar dengan antarmuka TypeScript di sisi frontend (misal: `ecgTypes.ts`), khususnya pada objek `RawECGData` (berisi properti array `time`, `ch1`, `ch2`, `ch3`).
-- **Render Visual:** Data yang diterima sudah dalam bentuk **murni milivolt (mV)** sehingga frontend tidak perlu lagi melakukan perhitungan kalibrasi multiplier/gain (*zero-overhead render*). Komponen grafik pada React cukup me-render nilai mentah ini secara langsung ke dalam bentuk gelombang EKG.
+- **Render Visual:** Data yang diterima sudah dalam bentuk **murni milivolt (mV)** sehingga frontend tidak perlu lagi melakukan perhitungan kalibrasi multiplier/gain (_zero-overhead render_). Komponen grafik pada React cukup me-render nilai mentah ini secara langsung ke dalam bentuk gelombang EKG.
 
 ### 2. Pengambilan Data Dataset (REST API)
-- **Koneksi HTTP:** Menggunakan pustaka *fetch* bawaan peramban atau Axios, frontend melakukan *request* HTTP `GET` ke REST API backend di `http://127.0.0.1:8081/api/records`.
+
+- **Koneksi HTTP:** Menggunakan pustaka _fetch_ bawaan peramban atau Axios, frontend melakukan _request_ HTTP `GET` ke REST API backend di `http://127.0.0.1:8081/api/records`.
 - **Fungsi:** Berguna untuk memuat dan menampilkan daftar ketersediaan file CSV dataset (seperti dari folder Chapman, PTB-XL, atau data simulasi Prosim) pada menu navigasi (sidebar/dropdown) di aplikasi React.
-- **CORS Terintegrasi:** REST API sisi server telah dikonfigurasi untuk mengizinkan *Cross-Origin Resource Sharing (CORS)* untuk domain produksi (`https://ecgrhythmia.cloud`, `https://www.ecgrhythmia.cloud`) dengan metode (`GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`), header (`Content-Type`, `Authorization`, `Accept`), serta memperbolehkan pengiriman kredensial (*allow credentials*).
+- **CORS Terintegrasi:** REST API sisi server telah dikonfigurasi untuk mengizinkan _Cross-Origin Resource Sharing (CORS)_ untuk domain produksi (`https://ecgrhythmia.cloud`, `https://www.ecgrhythmia.cloud`) dengan metode (`GET`, `POST`, `PUT`, `DELETE`, `OPTIONS`), header (`Content-Type`, `Authorization`, `Accept`), serta memperbolehkan pengiriman kredensial (_allow credentials_).
 
 ---
 
 ## 📂 Struktur Folder Frontend (`arrhythmia-detection-dashboard`)
 
-Proyek antarmuka ini dibangun menggunakan **React**, **TypeScript**, **Vite**, dan **Tailwind CSS**. Arsitektur internal aplikasi (*Clean Architecture*) disusun agar kode lebih modular dan mudah dipelihara.
+Proyek antarmuka ini dibangun menggunakan **React**, **TypeScript**, **Vite**, dan **Tailwind CSS**. Arsitektur internal aplikasi (_Clean Architecture_) disusun agar kode lebih modular dan mudah dipelihara.
 
 ```text
 c:\arrhythmia-detection-dashboard\
@@ -48,46 +52,56 @@ c:\arrhythmia-detection-dashboard\
 Backend aplikasi ini dibangun menggunakan **Rust** dengan framework web asinkron **Axum**, sistem database connection pooling **r2d2** (terintegrasi SQLite + SQLCipher), dan logging terstruktur menggunakan **tracing**.
 
 ### Persyaratan (Prerequisites)
+
 - **Rust & Cargo**: Instal Rust melalui [rustup.rs](https://rustup.rs/).
 - **SQLite**: Database SQLite tertanam terenkripsi via SQLCipher, tidak memerlukan server terpisah.
 
 ### Langkah-langkah Instalasi & Konfigurasi
+
 1. **Navigasi ke Direktori**:
    ```bash
    cd \ecgrhythmia-backend
    ```
 2. **Konfigurasi Berkas `.env`**:
-   Buat berkas `.env` di root direktori backend Anda berdasarkan struktur berikut (kosongkan nilai kredensial untuk deployment produksi demi keamanan):
+   Buat berkas `.env` di root direktori backend Anda (contoh lengkap di `.env.example`):
+
    ```env
    HOST_IP=127.0.0.1
    REST_PORT=8081
    WS_PORT=8080
 
-   # Konfigurasi & Kredensial Medis (Diisi pada saat Deployment)
+   # PostgreSQL / Supabase (WAJIB - dipakai saat build & runtime)
+   DATABASE_URL=postgres://user:password@host:port/postgres
+
+   # Rahasia JWT Supabase (WAJIB - verifikasi token HS256)
+   SUPABASE_JWT_SECRET=isi_dengan_jwt_secret_supabase_anda
+
+   # Konfigurasi MQTT Broker (WAJIB)
    MQTT_BROKER=
    MQTT_PORT=8883
    MQTT_TOPIC=
    MQTT_USERNAME=
    MQTT_PASSWORD=
-
-   # Kunci Keamanan & Sesi
-   JWT_SECRET=
-   SQLITE_KEY=
-   DB_PATH=database.db
    ```
-   *Catatan:* Jika `REST_PORT` dan `WS_PORT` disamakan (misalnya keduanya `8080`), server Axum akan otomatis menyatu pada satu port tunggal (REST API melayani di `/api` dan WebSocket di `/`).
 
- 3. **Build & Run**:
-   ```bash
-   cargo run
-   ```
-   *Cargo akan mengunduh dependensi (crates), melakukan kompilasi asinkron, menjalankan migrasi database otomatis, dan menyalakan server.*
+   _Catatan:_ `DATABASE_URL` yang sama juga dipakai oleh _macro sqlx saat kompilasi_. Jika hanya tersimpan di `.env`, ekspor ke environment sebelum build: `export DATABASE_URL=$(grep ^DATABASE_URL= .env | cut -d= -f2-)`.
+
+   _Catatan port:_ Jika `REST_PORT` dan `WS_PORT` disamakan, server Axum menyatu pada satu port (REST di `/api`, WebSocket di `/`).
+
+3. **Build & Run**:
+
+```bash
+cargo run
+```
+
+_Cargo akan mengunduh dependensi (crates), melakukan kompilasi asinkron, menjalankan migrasi database otomatis, dan menyalakan server._
 
 ### 4. Pengujian & Otomatisasi Rilis (Testing & Build Automation)
 
 Aplikasi ini dilengkapi dengan pengujian unit dan pengujian integrasi yang komprehensif untuk menjamin stabilitas sistem sebelum dilakukan kompilasi rilis produksi (build) dan deployment.
 
 #### A. Kategori Pengujian
+
 1. **Unit Tests (Pengujian Unit):**
    - **Config Loader (`src/config.rs`):** Memvalidasi pembacaan berkas `.env` dan fallback nilai default jika variabel tidak tersedia.
    - **CSV Reader (`src/data/csv_reader.rs`):** Memverifikasi pembacaan dataset EKG statis dan penanganan data kosong atau tidak valid (fallback).
@@ -100,6 +114,7 @@ Aplikasi ini dilengkapi dengan pengujian unit dan pengujian integrasi yang kompr
    - **ECG Pacer Integration:** Memverifikasi pembagian data (slicing) signal EKG dan broadcast via WebSocket klien.
 
 #### B. Menjalankan Pengujian Manual
+
 - **Di Windows (PowerShell):**
   ```powershell
   $env:OPENSSL_DIR="d:\Project\ecgrhythmia-backend\openssl-custom"; $env:OPENSSL_STATIC="1"; cargo test
@@ -109,18 +124,110 @@ Aplikasi ini dilengkapi dengan pengujian unit dan pengujian integrasi yang kompr
   cargo test
   ```
 
+### C. Migrasi dan Test Terpadu (PostgreSQL)
+
+Schema PostgreSQL tersedia sebagai migrasi versioned di `migrations/0001_initial.sql`.
+Pastikan `DATABASE_URL` berisi connection string PostgreSQL yang valid, lalu jalankan:
+
+```powershell
+./scripts/migrate.ps1
+./scripts/test-all.ps1
+```
+
+> **PENTING — jangan build/migrate terhadap *pooler* Supabase:** macro `sqlx` (query!,
+> query_as!) akan gagal koneksi-pooler dengan error `prepared statement "sqlx_s_*" already
+> exists`. Gunakan salah satu:
+> 1. **PostgreSQL langsung** (bukan pooler) sebagai `DATABASE_URL` saat `cargo check`/`test`, atau
+> 2. **offline cache** yang sudah di-commit di folder `.sqlx/`:
+>    `SQLX_OFFLINE=true cargo build --release` (tanpa memerlukan koneksi DB sama sekali).
+
+Runner tersebut menjalankan migrasi, pemeriksaan formatting, dan seluruh target Rust.
+Gunakan `./scripts/test-all.ps1 -SkipMigration` hanya untuk mengisolasi kegagalan compile/test.
+End-to-end test memerlukan PostgreSQL, MQTT broker, server backend, dan client test; suite E2E otomatis belum tersedia di repository ini.
+
+### D. Migrasi Database Lama (SQLite/SQLCipher) → PostgreSQL/Supabase
+
+> **PENTING (deployment VPS):** Sebelum migrasi, pastikan seluruh perubahan kode "refactor ke PostgreSQL" di repo lokal sudah **di-commit dan di-push** ke `main`. Folder `migrations/`, `scripts/`, dan `src/bin/migrate_db.rs` masih berupa file baru yang belum ter-track dan **tidak ikut ter-pull di VPS**. Setelah push, lakukan `git pull` di VPS.
+
+#### Prasyarat di VPS (Linux)
+
+```bash
+sudo apt update && sudo apt install -y sqlcipher postgresql-client python3-pip
+python3 -m pip install --user psycopg2-binary
+```
+
+#### Langkah Migrasi (satu per satu)
+
+1. **Siapkan `.env` di VPS** (contoh: `.env.example`) — **WAJIB** berisi nilai **asli**:
+   - `DATABASE_URL` (Supabase/PostgreSQL yang sudah ada / baru)
+   - `SUPABASE_JWT_SECRET` (dari Supabase Dashboard → Settings → API → JWT Secret)
+   - `MQTT_*` (kredensial broker lama/tetap)
+
+2. **Jalankan migrasi skema PostgreSQL** (membuat/menyelaraskan tabel tanpa menghapus data):
+
+   ```bash
+   export DATABASE_URL="$(grep ^DATABASE_URL= .env | cut -d= -f2- | tr -d '\"')"
+   for f in migrations/*.sql; do psql "$DATABASE_URL" --set ON_ERROR_STOP=1 -f "$f"; done
+   ```
+
+3. **Migrasi data dari `database.db` (SQLCipher) ke PostgreSQL** — otomatis memetakan kolom
+   (timestamp/text, date, umur pasien, bool), idempoten (upsert `ON CONFLICT`):
+
+   ```bash
+   ./scripts/run_migration.sh database.db
+   ```
+
+   atau manual:
+   ```bash
+   python3 scripts/migrate_sqlite_to_postgres.py \
+     --sqlite database.db --db-key "$(grep ^SQLITE_KEY= .env | cut -d= -f2- | tr -d '\"')" \
+     --pg "$DATABASE_URL"
+   ```
+
+4. **Salin berkas rekaman `records/*.jsonl`** dari server lama (data frame sinyal tidak
+   tersimpan di database, hanya `file_path`-nya):
+
+   ```bash
+   rsync -avz user@old-server:/path/ecgrhythmia-backend/records/ records/
+   ```
+
+5. **Verifikasi hasil**:
+
+   ```bash
+   psql "$DATABASE_URL" -c "\dt"
+   psql "$DATABASE_URL" -c "SELECT (SELECT count(*) FROM accounts) a, (SELECT count(*) FROM patients) p, (SELECT count(*) FROM sessions) s, (SELECT count(*) FROM frame_records) f;"
+   ```
+
+6. **Build & jalankan server** (pakai offline cache — tidak perlu DB saat kompilasi):
+
+   ```bash
+   SQLX_OFFLINE=true cargo build --release
+   ./target/release/ecg-backend
+   ```
+
+   Server otomatis menjalankan kembali `run_migrations` saat start (idempoten).
+
+> **Regenerasi offline cache `.sqlx/`**: install `cargo install sqlx-cli --no-default-features
+> --features postgres,rustls --version 0.7.4`, hubungkan `DATABASE_URL` ke PostgreSQL **langsung**,
+> lalu `cargo sqlx prepare --workspace -- --all-targets`. Commit hasil folder `.sqlx/`.
+
 #### C. Pengujian Otomatis Sebelum Build & Deploy (Sangat Direkomendasikan)
+
 Untuk menjamin tidak ada kode rusak yang masuk ke tahap kompilasi rilis, kami menyediakan skrip otomatisasi **`test_and_build.ps1`** (Windows) dan **`test_and_build.sh`** (Linux). Skrip ini akan melakukan hal berikut secara berurutan:
+
 1. Menjalankan seluruh pengujian unit & integrasi.
 2. Menganalisis log hasil uji dan **melampirkan laporan jumlah test yang berhasil (passed) dan gagal (failed)** pada konsol.
-3. **Jika ada pengujian yang gagal (atau terjadi error kompilasi):** Skrip akan langsung menghentikan proses (*abort*) untuk mencegah pembangunan biner yang rusak.
+3. **Jika ada pengujian yang gagal (atau terjadi error kompilasi):** Skrip akan langsung menghentikan proses (_abort_) untuk mencegah pembangunan biner yang rusak.
 4. **Jika seluruh pengujian lolos:** Skrip melanjutkan dengan mengompilasi biner produksi teroptimasi menggunakan `cargo build --release`.
 
 ##### Cara Menjalankan:
+
 - **Di Windows (PowerShell):**
+
   ```powershell
   .\test_and_build.ps1
   ```
+
   Output biner produksi (`.exe`) akan tersedia di `target\release\ecg-backend.exe`.
 
 - **Di Linux (Terminal):**
@@ -132,35 +239,34 @@ Untuk menjamin tidak ada kode rusak yang masuk ke tahap kompilasi rilis, kami me
 
 ---
 
-## 🗄️ Pemakaian Database (SQLite + SQLCipher)
+## 🗄️ Pemakaian Database (PostgreSQL / Supabase)
 
-Aplikasi ini menggunakan database terenkripsi SQLite (`database.db`) yang otomatis dibuat pada direktori utama backend.
+Aplikasi menggunakan **PostgreSQL (supaya kompatibel dengan Supabase)** sebagai penyimpanan data.
 
-- **Fungsi Utama**: Menyimpan data persisten yang mencakup **Akun Pengguna**, **Profil Dokter & Pasien**, **Status Perangkat**, dan **Riwayat Sesi Medis**.
-- **Database Connection Pooling (`r2d2`)**: Akses database dikelola menggunakan connection pool terbagi untuk meningkatkan kecepatan pemrosesan data paralel dan mencegah error *database locked*.
-- **Enkripsi Kunci SQLCipher**: Database diamankan dengan mengenkripsi seluruh file menggunakan `SQLITE_KEY` yang diinisialisasi otomatis pada setiap koneksi baru di pool.
-- **Inisialisasi & Migrasi Otomatis**: Saat backend pertama kali dijalankan, sistem akan otomatis mengeksekusi migrasi skema tabel (jika belum ada) dan mendaftarkan perangkat default agar siap digunakan.
+- **Fungsi Utama**: Menyimpan **Akun Pengguna**, **Profil Dokter & Pasien**, **Status Perangkat**, dan **Metadata Riwayat Sesi Medis** (`sessions`, `frame_records`, `accounts`, `doctors`, `patients`, `devices`).
+- **Connection Pooling (`sqlx`)**: Akses database dikelola pool asinkron (`PgPool`) untuk memproses data paralel.
+- **Skema Otomatis**: Saat server dijalankan, `db::postgres::run_migrations` mengeksekusi `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS`. Skema versioned tersedia di `migrations/` (`0001_initial.sql`, `0002_postgres_evolution.sql`). Skema lama yang sudah berisi data aman di-*upgrade* (kolom baru ditambahkan, konstrain disesuaikan) tanpa menghapus data.
+- **Data sinyal EKG**: Data frame mentah disimpan sebagai file `records/<session_id>.jsonl`; database hanya menyimpan `file_path` dan metadata frame.
 
 ---
 
 ## 🌐 Sinkronisasi dengan PWA (Frontend)
 
-Backend didesain agar dapat tersinkronisasi mulus dengan aplikasi React (yang telah dikonfigurasi sebagai *Progressive Web App* / PWA).
+Backend didesain agar dapat tersinkronisasi mulus dengan aplikasi React (yang telah dikonfigurasi sebagai _Progressive Web App_ / PWA).
 
-1. **Sinkronisasi Data Profil & Riwayat (REST API)**: 
-   Setiap kali pengguna melakukan pembaruan profil atau pengaturan perangkat di PWA, frontend mengirimkan *request* HTTP (seperti `POST` atau `PUT`) ke `http://127.0.0.1:8081/api/...`. Backend SQLite akan langsung menyimpan perubahan ini secara permanen.
-   
+1. **Sinkronisasi Data Profil & Riwayat (REST API)**:
+   Setiap kali pengguna melakukan pembaruan profil atau pengaturan perangkat di PWA, frontend mengirimkan _request_ HTTP (seperti `POST` atau `PUT`) ke `http://127.0.0.1:8081/api/...`. Backend SQLite akan langsung menyimpan perubahan ini secara permanen.
 2. **Komunikasi Real-Time (WebSocket)**:
-   PWA mengandalkan koneksi persisten ke `ws://127.0.0.1:8080` untuk menerima aliran (*streaming*) grafik detak jantung EKG tanpa *overhead* (hambatan) koneksi ulang HTTP biasa.
-   
+   PWA mengandalkan koneksi persisten ke `ws://127.0.0.1:8080` untuk menerima aliran (_streaming_) grafik detak jantung EKG tanpa _overhead_ (hambatan) koneksi ulang HTTP biasa.
 3. **Mekanisme Fallback (Mode Offline PWA)**:
-   Jika backend terputus atau dimatikan, antarmuka PWA dilengkapi dengan *Local Storage Fallback*. PWA tetap dapat dioperasikan secara fungsional (untuk berpindah halaman, melihat riwayat *cache*, atau menyimpan profil tiruan) berkat fitur *Service Worker* dan penyimpanan lokal, menjamin UX (Pengalaman Pengguna) yang tidak terputus.
+   Jika backend terputus atau dimatikan, antarmuka PWA dilengkapi dengan _Local Storage Fallback_. PWA tetap dapat dioperasikan secara fungsional (untuk berpindah halaman, melihat riwayat _cache_, atau menyimpan profil tiruan) berkat fitur _Service Worker_ dan penyimpanan lokal, menjamin UX (Pengalaman Pengguna) yang tidak terputus.
 
 ---
 
 ## ⚙️ Cara Setup & Menjalankan Frontend
 
 ### Persyaratan (Prerequisites)
+
 - **Node.js** (Rekomendasi versi LTS 18.x atau ke atas).
 - Manajer paket seperti **npm** (biasanya terpasang otomatis bersama Node.js).
 
@@ -174,32 +280,30 @@ Backend didesain agar dapat tersinkronisasi mulus dengan aplikasi React (yang te
    ```bash
    npm install
    ```
-3. **Jalankan *Development Server***:
+3. **Jalankan _Development Server_**:
    ```bash
    npm run dev
    ```
-4. **Buka Aplikasi di Browser**. 
-   Secara *default*, Vite akan menjalankan aplikasi di `http://localhost:5173` (perhatikan log di terminal Anda untuk tautan spesifik). Buka tautan tersebut menggunakan peramban web favorit Anda.
+4. **Buka Aplikasi di Browser**.
+   Secara _default_, Vite akan menjalankan aplikasi di `http://localhost:5173` (perhatikan log di terminal Anda untuk tautan spesifik). Buka tautan tersebut menggunakan peramban web favorit Anda.
 
 ### Perintah Tambahan (NPM Scripts)
-- `npm run build`: Melakukan proses kompilasi TypeScript dan mem-*build* aplikasi agar siap di-*deploy* ke tahap produksi (berada di folder `dist/`).
+
+- `npm run build`: Melakukan proses kompilasi TypeScript dan mem-_build_ aplikasi agar siap di-_deploy_ ke tahap produksi (berada di folder `dist/`).
 - `npm run lint`: Memeriksa potensi kesalahan/standar kode dengan cepat (memanfaatkan `oxlint`).
-- `npm run preview`: Membuka server lokal (*preview*) untuk melihat dan menguji *build* versi produksi yang telah dikompilasi sebelumnya.
+- `npm run preview`: Membuka server lokal (_preview_) untuk melihat dan menguji _build_ versi produksi yang telah dikompilasi sebelumnya.
 
 ---
 
 ## 🔄 Mekanisme Streaming WebSocket (Backend Internal)
 
-Dalam sistem ini, backend (Rust) memegang kendali penuh atas mekanisme pengaturan ritme pengiriman aliran data EKG (dari file CSV ke WebSocket) agar persis menyerupai alat fisik medis *real-time*.
+Dalam sistem ini, backend (Rust) memegang kendali penuh atas mekanisme pengaturan ritme pengiriman aliran data EKG (dari file CSV ke WebSocket) agar persis menyerupai alat fisik medis _real-time_.
 
-1. **Chunking Data (Pemaketan):** 
-   Alih-alih mengirim titik koordinat satu per satu yang akan membuat jaringan kewalahan (karena *overhead* WebSocket), backend memotong (chunk) aliran data dalam bentuk *batch*.
-   
-2. **Frekuensi Sampling (250Hz):** 
-   Sistem diatur pada asumsi frekuensi *sampling rate* dasar 250Hz. Backend mengelompokkan secara spesifik **25 sampel data** menjadi satu *chunk* paket transmisi.
-   
-3. **Delay Real-Time Presisi:** 
-   Dalam *sampling rate* 250Hz, 25 sampel merepresentasikan durasi waktu tepat **100 milidetik (ms)**. Oleh karena itu, *thread* pengiriman backend akan menerapkan sinkronisasi jeda waktu otomatis (*sleep_duration*) selama 100ms setiap kali selesai mengirimkan satu *chunk* paket ke frontend.
-   
-4. **Aliran Tanpa Henti (Seamless Looping):** 
-   Skema ini menjamin kelancaran *streaming real-time* yang sangat konsisten, setara dengan kecepatan sapuan standar perekaman di atas kertas termal EKG (25 mm/s). Ketika pointer pembacaan backend telah mencapai titik data terakhir pada file rekaman CSV, sistem akan otomatis mereset siklus dari titik nol (*looping*), mensimulasikan aliran detak jantung pasien yang terus menyala.
+1. **Chunking Data (Pemaketan):**
+   Alih-alih mengirim titik koordinat satu per satu yang akan membuat jaringan kewalahan (karena _overhead_ WebSocket), backend memotong (chunk) aliran data dalam bentuk _batch_.
+2. **Frekuensi Sampling (250Hz):**
+   Sistem diatur pada asumsi frekuensi _sampling rate_ dasar 250Hz. Backend mengelompokkan secara spesifik **25 sampel data** menjadi satu _chunk_ paket transmisi.
+3. **Delay Real-Time Presisi:**
+   Dalam _sampling rate_ 250Hz, 25 sampel merepresentasikan durasi waktu tepat **100 milidetik (ms)**. Oleh karena itu, _thread_ pengiriman backend akan menerapkan sinkronisasi jeda waktu otomatis (_sleep_duration_) selama 100ms setiap kali selesai mengirimkan satu _chunk_ paket ke frontend.
+4. **Aliran Tanpa Henti (Seamless Looping):**
+   Skema ini menjamin kelancaran _streaming real-time_ yang sangat konsisten, setara dengan kecepatan sapuan standar perekaman di atas kertas termal EKG (25 mm/s). Ketika pointer pembacaan backend telah mencapai titik data terakhir pada file rekaman CSV, sistem akan otomatis mereset siklus dari titik nol (_looping_), mensimulasikan aliran detak jantung pasien yang terus menyala.
