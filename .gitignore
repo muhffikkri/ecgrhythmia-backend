@@ -23,6 +23,7 @@ Cargo.lock
 # Environment Variables
 .env
 .env.*
+!.env.example
 
 # SQLite Databases
 *.db

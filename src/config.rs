@@ -22,52 +22,62 @@ impl AppConfig {
 
         let host_ip = env::var("HOST_IP")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .unwrap_or_else(|| "127.0.0.1".to_string());
         let rest_port = env::var("REST_PORT")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .unwrap_or_else(|| "8081".to_string());
         let ws_port = env::var("WS_PORT")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .unwrap_or_else(|| "8080".to_string());
-        
+
         let mqtt_broker = env::var("MQTT_BROKER")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: MQTT_BROKER belum diset di .env!");
-        
+
         let mqtt_port = env::var("MQTT_PORT")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .unwrap_or_else(|| "8883".to_string())
             .parse::<u16>()
             .unwrap_or(8883);
-            
+
         let mqtt_topic = env::var("MQTT_TOPIC")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: MQTT_TOPIC belum diset di .env!");
-            
+
         let mqtt_username = env::var("MQTT_USERNAME")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: MQTT_USERNAME belum diset di .env!");
-            
+
         let mqtt_password = env::var("MQTT_PASSWORD")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: MQTT_PASSWORD belum diset di .env!");
-        
+
         let supabase_jwt_secret = env::var("SUPABASE_JWT_SECRET")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: SUPABASE_JWT_SECRET belum diset di .env!");
-            
+
         let database_url = env::var("DATABASE_URL")
             .ok()
-            .filter(|s| !s.is_empty()).map(|s| s.replace("\"", ""))
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: DATABASE_URL belum diset di .env!");
 
         AppConfig {
