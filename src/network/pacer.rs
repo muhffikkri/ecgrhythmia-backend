@@ -1,16 +1,16 @@
-use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
-use std::time::Duration;
 use crate::models::device::DevicePayload;
 use crate::models::payload::{ECGDataPayload, RawECGData, ServerMessage};
 use crate::network::websocket::ClientList;
-use tracing::{info, error};
+use std::time::Duration;
+use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
+use tracing::{error, info};
 
 pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
     let (tx, mut rx) = unbounded_channel::<DevicePayload>();
 
     tokio::spawn(async move {
         info!("[Pacer] Thread pengatur laju (pacer) berjalan secara asinkron...");
-        
+
         while let Some(device_data) = rx.recv().await {
             let total_samples = device_data.ecg.samples.len();
             if total_samples == 0 {
@@ -19,7 +19,10 @@ pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
 
             let fs = device_data.sampling_rate_hz;
             if fs <= 0.0 {
-                error!("[Pacer] Sampling rate tidak valid ({} Hz). Mengabaikan data.", fs);
+                error!(
+                    "[Pacer] Sampling rate tidak valid ({} Hz). Mengabaikan data.",
+                    fs
+                );
                 continue;
             }
 
@@ -39,7 +42,7 @@ pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
 
             // Atur ukuran pemotongan (chunking)
             // Misalnya 25 sampel (100ms) untuk 250Hz
-            let chunk_size = (fs * 0.1) as usize; 
+            let chunk_size = (fs * 0.1) as usize;
             let chunk_size = if chunk_size == 0 { 25 } else { chunk_size };
             let sleep_duration = Duration::from_millis((1000.0 * chunk_size as f64 / fs) as u64);
 
@@ -80,9 +83,7 @@ pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
 
                 if let Ok(json_string) = serde_json::to_string(&msg) {
                     let mut clients_lock = clients.lock().unwrap();
-                    clients_lock.retain(|sender| {
-                        sender.send(json_string.clone()).is_ok()
-                    });
+                    clients_lock.retain(|sender| sender.send(json_string.clone()).is_ok());
                 }
 
                 tokio::time::sleep(sleep_duration).await;

@@ -3,11 +3,10 @@
  * Bertugas berlangganan (subscribe) data EKG dari MQTT Broker (Mosquitto)
  * dan meneruskannya ke handler WebSocket.
  */
-
-use rumqttc::{Client, MqttOptions, QoS, Event, Packet, Transport, TlsConfiguration};
+use rumqttc::{Client, Event, MqttOptions, Packet, QoS, TlsConfiguration, Transport};
 use std::thread;
 use std::time::Duration;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 pub fn start_mqtt_listener<F>(
     broker_host: &str,
@@ -15,7 +14,7 @@ pub fn start_mqtt_listener<F>(
     topic: &str,
     username: &str,
     password: &str,
-    on_message: F
+    on_message: F,
 ) -> Client
 where
     F: Fn(String) + Send + 'static,
@@ -24,24 +23,27 @@ where
     let topic_name = topic.to_string();
 
     use std::time::{SystemTime, UNIX_EPOCH};
-    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
     let client_id = format!("rust_ecg_bridge_{}", timestamp);
-    
+
     let mut mqttoptions = MqttOptions::new(&client_id, &host, broker_port);
     mqttoptions.set_keep_alive(Duration::from_secs(60));
     // Perbesar limit ukuran payload hingga 10MB agar tidak error "payload size limit exceeded"
     mqttoptions.set_max_packet_size(10 * 1024 * 1024, 10 * 1024 * 1024);
-    
+
     // --- ADDED CREDENTIALS & TLS FOR HIVEMQ CLOUD ---
     mqttoptions.set_credentials(username, password);
-    
+
     if broker_port == 8883 {
         mqttoptions.set_transport(Transport::Tls(TlsConfiguration::default()));
     }
 
     let (client, mut connection) = Client::new(mqttoptions, 10);
     let client_clone = client.clone();
-    
+
     info!(host = %host, port = broker_port, "Mencoba menghubungkan ke Broker MQTT...");
 
     // Spawn thread khusus agar listener MQTT tidak mengganggu server WebSocket
@@ -64,7 +66,7 @@ where
                         if serde_json::from_str::<serde_json::Value>(&payload_str).is_err() {
                             info!("Menerima paket sensor EKG (Invalid JSON format)");
                         }
-                        
+
                         // Teruskan pesan JSON murni ke callback WebSocket
                         on_message(payload_str);
                     } else {

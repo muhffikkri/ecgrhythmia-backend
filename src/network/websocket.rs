@@ -1,11 +1,14 @@
-use std::sync::{Arc, Mutex};
-use tokio::sync::mpsc::UnboundedSender;
 use axum::{
-    extract::{ws::{WebSocket, WebSocketUpgrade, Message}, State},
+    extract::{
+        ws::{Message, WebSocket, WebSocketUpgrade},
+        State,
+    },
     response::IntoResponse,
 };
+use futures_util::{sink::SinkExt, stream::StreamExt};
+use std::sync::{Arc, Mutex};
+use tokio::sync::mpsc::UnboundedSender;
 use tracing::info;
-use futures_util::{stream::StreamExt, sink::SinkExt};
 
 pub type ClientList = Arc<Mutex<Vec<UnboundedSender<String>>>>;
 
@@ -20,11 +23,14 @@ async fn handle_socket(socket: WebSocket, clients: ClientList) {
     info!("[WebSocket] Koneksi WebSocket baru sedang dinegosiasikan...");
     let (mut ws_sender, mut ws_receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    
+
     {
         let mut clients_lock = clients.lock().unwrap();
         clients_lock.push(tx);
-        info!("[WebSocket] Client baru terhubung! Total klien aktif: {}", clients_lock.len());
+        info!(
+            "[WebSocket] Client baru terhubung! Total klien aktif: {}",
+            clients_lock.len()
+        );
     }
 
     // Task to forward messages to the websocket client

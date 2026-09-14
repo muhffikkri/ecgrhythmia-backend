@@ -12,8 +12,6 @@ pub struct DeviceEcg {
     pub samples: Vec<Vec<f64>>,
 }
 
-
-
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct DevicePrediction {
     pub status: String,
