@@ -151,7 +151,7 @@ def migrate(conn_src, conn_pg, dry_run):
         total[label] = len(rows)
 
     # 1. accounts -------------------------------------------------------
-    rows = [
+    acc_rows = [
         (
             r[0], r[1], r[2], r[3], parse_ts(r[4]), r[5], r[6] if len(r) > 6 else None,
         )
@@ -159,23 +159,51 @@ def migrate(conn_src, conn_pg, dry_run):
             "SELECT id, email, password_hash, role, created_at, profile_photo, status FROM accounts"
         )
     ]
-    apply(
-        """INSERT INTO accounts (id, email, password_hash, role, created_at, profile_photo, status)
-           VALUES (%s,%s,%s,%s,%s,%s,%s)
-           ON CONFLICT (id) DO UPDATE SET
-             email = EXCLUDED.email,
-             password_hash = EXCLUDED.password_hash,
-             role = EXCLUDED.role,
-             created_at = EXCLUDED.created_at,
-             profile_photo = EXCLUDED.profile_photo,
-             status = EXCLUDED.status""",
-        rows,
-        "accounts",
-    )
+    acct_remap = {}
+    if dry_run:
+        acc_inserts, acc_updates = acc_rows, []
+        total["accounts"] = len(acc_rows)
+    else:
+        with conn_pg.cursor() as cur:
+            cur.execute("SELECT email, id FROM accounts")
+            pg_email_to_id = {em: rid for em, rid in cur.fetchall() if em}
+        acc_inserts, acc_updates = [], []
+        for sid, email, pw_hash, role, created_at, photo, status in acc_rows:
+            existing = pg_email_to_id.get(email) if email else None
+            if existing is not None and existing != sid:
+                # Email sudah ada di PostgreSQL dengan id berbeda: gabungkan ke
+                # akun yang sudah ada, lalu remap referensi id di tabel anak.
+                acct_remap[sid] = existing
+                acc_updates.append((pw_hash, role, photo, status, existing))
+            else:
+                acct_remap[sid] = sid
+                acc_inserts.append((sid, email, pw_hash, role, created_at, photo, status))
+    if acc_inserts:
+        apply(
+            """INSERT INTO accounts (id, email, password_hash, role, created_at, profile_photo, status)
+               VALUES (%s,%s,%s,%s,%s,%s,%s)
+               ON CONFLICT (id) DO UPDATE SET
+                 email = EXCLUDED.email,
+                 password_hash = EXCLUDED.password_hash,
+                 role = EXCLUDED.role,
+                 created_at = EXCLUDED.created_at,
+                 profile_photo = EXCLUDED.profile_photo,
+                 status = EXCLUDED.status""",
+            acc_inserts,
+            "accounts",
+        )
+    if acc_updates:
+        with conn_pg.cursor() as cur_pg:
+            cur_pg.executemany(
+                "UPDATE accounts SET password_hash=%s, role=%s, profile_photo=%s, status=%s WHERE id=%s",
+                acc_updates,
+            )
+        conn_pg.commit()
+        total["accounts"] = len(acc_inserts) + len(acc_updates)
 
     # 2. doctors --------------------------------------------------------
     rows = [
-        (r[0], r[1], r[2], r[3])
+        (r[0], acct_remap.get(r[1], r[1]), r[2], r[3])
         for r in cur_src.execute(
             "SELECT id, account_id, first_name, last_name FROM doctors"
         )
@@ -198,7 +226,7 @@ def migrate(conn_src, conn_pg, dry_run):
     ):
         dob = parse_date(r[5])
         rows_pat.append(
-            (r[0], r[1], r[2], r[3], r[4], dob, calc_age(dob), r[6], r[7])
+            (r[0], acct_remap.get(r[1], r[1]), r[2], r[3], r[4], dob, calc_age(dob), r[6], r[7])
         )
     apply(
         """INSERT INTO patients (id, account_id, primary_doctor_id, first_name, last_name, date_of_birth, age, gender, device_id, created_at)
@@ -272,7 +300,8 @@ def migrate(conn_src, conn_pg, dry_run):
                 d.get("start_time") or 0, d.get("end_time") or 0,
                 d.get("label") or "Normal", to_bool(d.get("confirmation")),
                 d.get("doc_classification"), d.get("dev_note"), d.get("doc_note"),
-                d.get("hidden", False) in (1, "1", True), d.get("created_by"),
+                d.get("hidden", False) in (1, "1", True),
+                (acct_remap.get(d["created_by"], d["created_by"]) if d.get("created_by") else None),
             )
         )
     apply(
