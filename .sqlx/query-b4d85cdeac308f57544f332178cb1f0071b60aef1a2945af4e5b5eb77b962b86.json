@@ -1,0 +1,66 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT s.id, s.device_id, s.patient_id, p.first_name || ' ' || p.last_name as patient_name, s.started_at, s.ended_at, s.file_path, s.ecg_paper \n             FROM sessions s JOIN patients p ON s.patient_id = p.id \n             WHERE p.primary_doctor_id = $1 ORDER BY s.started_at DESC LIMIT $2 OFFSET $3",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "device_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "patient_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "patient_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "started_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "ended_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 6,
+        "name": "file_path",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "ecg_paper",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      null,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "b4d85cdeac308f57544f332178cb1f0071b60aef1a2945af4e5b5eb77b962b86"
+}

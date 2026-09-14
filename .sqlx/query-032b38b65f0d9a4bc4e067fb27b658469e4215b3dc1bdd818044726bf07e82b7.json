@@ -1,0 +1,44 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id, name, mqtt_topic, mqtt_broker, mqtt_port FROM devices",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "mqtt_topic",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "mqtt_broker",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "mqtt_port",
+        "type_info": "Int4"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "032b38b65f0d9a4bc4e067fb27b658469e4215b3dc1bdd818044726bf07e82b7"
+}

@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT id AS \"id!\", name AS \"name!\", role AS \"role!\", status AS \"status!\", registered_at, connected_doctor_id, connected_device_id, profile_photo FROM (\n                    SELECT p.id AS id, p.first_name || ' ' || p.last_name AS name, a.role AS role, COALESCE(a.status, 'Offline') AS status, a.created_at AS registered_at, p.primary_doctor_id AS connected_doctor_id, p.device_id AS connected_device_id, a.profile_photo AS profile_photo\n                    FROM patients p JOIN accounts a ON p.account_id = a.id\n                    UNION ALL\n                    SELECT d.id, d.first_name || ' ' || d.last_name, a.role, COALESCE(a.status, 'Offline'), a.created_at, NULL, NULL, a.profile_photo\n                    FROM doctors d JOIN accounts a ON d.account_id = a.id\n                ) AS allusers ORDER BY registered_at DESC LIMIT $1 OFFSET $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "registered_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "connected_doctor_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "connected_device_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "profile_photo",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "c2466762d9d1cf8265c845cd6b72611165ef1c70fb8d323e1edf21d527974195"
+}

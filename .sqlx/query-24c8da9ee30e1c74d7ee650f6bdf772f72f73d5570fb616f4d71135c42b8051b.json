@@ -1,0 +1,18 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE patients SET first_name = $1, last_name = $2, date_of_birth = $3, gender = $4 WHERE id = $5",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Date",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "24c8da9ee30e1c74d7ee650f6bdf772f72f73d5570fb616f4d71135c42b8051b"
+}

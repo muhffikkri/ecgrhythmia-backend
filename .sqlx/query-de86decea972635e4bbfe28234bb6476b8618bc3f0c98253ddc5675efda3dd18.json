@@ -1,0 +1,65 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id AS \"id!\", p.first_name || ' ' || p.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo \n                 FROM patients p JOIN accounts a ON p.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "primary_doctor_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "device_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "profile_photo",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      false,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "de86decea972635e4bbfe28234bb6476b8618bc3f0c98253ddc5675efda3dd18"
+}

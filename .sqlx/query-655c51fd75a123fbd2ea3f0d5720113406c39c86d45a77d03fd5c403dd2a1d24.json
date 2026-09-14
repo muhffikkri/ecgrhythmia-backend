@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO devices (id, name) VALUES ('dev_worker_test', 'device-worker-test') ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "655c51fd75a123fbd2ea3f0d5720113406c39c86d45a77d03fd5c403dd2a1d24"
+}

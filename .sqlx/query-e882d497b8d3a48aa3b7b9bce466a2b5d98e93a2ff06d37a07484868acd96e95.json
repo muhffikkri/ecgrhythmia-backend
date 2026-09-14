@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE doctors SET first_name = $1, last_name = $2 WHERE id = $3",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "e882d497b8d3a48aa3b7b9bce466a2b5d98e93a2ff06d37a07484868acd96e95"
+}

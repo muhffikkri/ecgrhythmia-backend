@@ -1,0 +1,64 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT p.id, p.first_name, p.last_name, p.age, p.gender, p.primary_doctor_id, a.profile_photo, p.device_id\n         FROM patients p LEFT JOIN accounts a ON p.account_id = a.id WHERE p.id = $1 OR p.account_id = $1",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "first_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "last_name",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "age",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "gender",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "primary_doctor_id",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "profile_photo",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 7,
+        "name": "device_id",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "2c8859d4a2c91681883d81fcebdef1442d74d7a18afbeb82ca892314ec3e0108"
+}

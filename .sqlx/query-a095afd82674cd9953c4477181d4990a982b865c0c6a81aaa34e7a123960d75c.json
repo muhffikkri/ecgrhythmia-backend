@@ -1,0 +1,12 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO sessions (id, device_id, started_at, file_path) VALUES ('ses_worker_test', 'dev_worker_test', NOW(), 'records/ses_worker_test.jsonl') ON CONFLICT (id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": []
+  },
+  "hash": "a095afd82674cd9953c4477181d4990a982b865c0c6a81aaa34e7a123960d75c"
+}

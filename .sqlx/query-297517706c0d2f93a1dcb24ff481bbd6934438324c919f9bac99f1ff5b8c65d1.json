@@ -1,0 +1,56 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.id as \"id!\", d.name as \"name!\", d.mqtt_broker, d.mqtt_port, d.mqtt_topic, d.mqtt_username, (SELECT p.id FROM patients p WHERE p.device_id = d.id LIMIT 1) as \"assigned_to?\"\n         FROM devices d",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "mqtt_broker",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "mqtt_port",
+        "type_info": "Int4"
+      },
+      {
+        "ordinal": 4,
+        "name": "mqtt_topic",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
+        "name": "mqtt_username",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 6,
+        "name": "assigned_to?",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      null
+    ]
+  },
+  "hash": "297517706c0d2f93a1dcb24ff481bbd6934438324c919f9bac99f1ff5b8c65d1"
+}

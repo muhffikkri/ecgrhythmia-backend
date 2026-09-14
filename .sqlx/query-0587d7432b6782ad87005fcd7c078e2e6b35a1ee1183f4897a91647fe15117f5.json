@@ -1,0 +1,16 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO frame_records (id, session_id, time_interval, confirmation, doc_classification) VALUES ($1, $2, $3, NULL, NULL) ON CONFLICT(id) DO NOTHING",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "0587d7432b6782ad87005fcd7c078e2e6b35a1ee1183f4897a91647fe15117f5"
+}

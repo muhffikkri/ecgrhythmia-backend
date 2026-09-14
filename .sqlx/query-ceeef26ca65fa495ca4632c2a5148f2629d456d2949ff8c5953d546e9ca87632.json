@@ -1,0 +1,53 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT d.id AS \"id!\", d.first_name || ' ' || d.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, a.profile_photo \n                 FROM doctors d JOIN accounts a ON d.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "id!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 1,
+        "name": "name!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 2,
+        "name": "role!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 3,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 4,
+        "name": "created_at",
+        "type_info": "Timestamptz"
+      },
+      {
+        "ordinal": 5,
+        "name": "profile_photo",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": [
+        "Int8",
+        "Int8"
+      ]
+    },
+    "nullable": [
+      false,
+      null,
+      false,
+      null,
+      false,
+      true
+    ]
+  },
+  "hash": "ceeef26ca65fa495ca4632c2a5148f2629d456d2949ff8c5953d546e9ca87632"
+}

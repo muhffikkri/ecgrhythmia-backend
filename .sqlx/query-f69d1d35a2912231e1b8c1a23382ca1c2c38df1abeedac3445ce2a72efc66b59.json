@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE patients SET device_id = NULL WHERE device_id = $1",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f69d1d35a2912231e1b8c1a23382ca1c2c38df1abeedac3445ce2a72efc66b59"
+}

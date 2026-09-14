@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE sessions SET ended_at = $1 WHERE ended_at IS NULL AND device_id = (SELECT id FROM devices WHERE name = $2 OR id = $2 LIMIT 1)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Timestamptz",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "cb0e58760d9935f1801050a5dae382afbc055e87dc8e8332da7b93c819704a45"
+}
