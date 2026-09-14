@@ -1,6 +1,6 @@
-use ecg_backend::{models, network, api, db, config};
+use ecg_backend::{api, config, db, models, network};
 
-use tracing::{info, error, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::fmt::format::FmtSpan;
 use tracing_subscriber::fmt::time::ChronoLocal;
 
@@ -8,7 +8,7 @@ use tracing_subscriber::fmt::time::ChronoLocal;
 async fn main() {
     // 1. Inisialisasi Tracing/Logging
     let timer = ChronoLocal::new("%Y-%m-%d %H:%M:%S".to_string());
-    
+
     let subscriber = tracing_subscriber::fmt()
         .with_max_level(Level::INFO)
         .with_timer(timer)
@@ -17,7 +17,7 @@ async fn main() {
         .with_thread_names(false)
         .with_span_events(FmtSpan::CLOSE)
         .finish();
-        
+
     tracing::subscriber::set_global_default(subscriber)
         .expect("Gagal mengatur global default tracing subscriber");
 
@@ -56,11 +56,12 @@ async fn main() {
     let db_tx = db::postgres::start_db_worker(pool.clone(), pacer_tx.clone());
 
     // 7. Load Devices and start MQTT Listeners dynamically
-    let mqtt_clients = std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
-    
+    let mqtt_clients =
+        std::sync::Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new()));
+
     {
         if let Ok(devices) = sqlx::query!("SELECT id, name, mqtt_broker, mqtt_port, mqtt_topic, mqtt_username, mqtt_password FROM devices WHERE mqtt_broker IS NOT NULL AND mqtt_port IS NOT NULL")
-            .fetch_all(&pool).await 
+            .fetch_all(&pool).await
         {
             for device in devices {
                 if let (Some(broker), Some(port), Some(topic), Some(username), Some(password)) = (
@@ -68,7 +69,7 @@ async fn main() {
                 ) {
                     let db_tx_clone = db_tx.clone();
                     let port_u16 = port as u16;
-                    
+
                     let client = network::mqtt_listener::start_mqtt_listener(
                         &broker,
                         port_u16,
@@ -90,7 +91,7 @@ async fn main() {
                             }
                         }
                     );
-                    
+
                     let mut clients_map = mqtt_clients.write().await;
                     clients_map.insert(device.id, client);
                 }
@@ -110,11 +111,17 @@ async fn main() {
     };
 
     let mut app = api::routes::create_router(app_state);
-    
+
     // Pasang endpoint WebSocket pada root "/" dan "/ws" untuk mendukung proxy produksi
     app = app
-        .route("/", axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()))
-        .route("/ws", axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()));
+        .route(
+            "/",
+            axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()),
+        )
+        .route(
+            "/ws",
+            axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()),
+        );
 
     // 8.5. Jalankan Loop Sinkronisasi Latar Belakang (Setiap 10 Jam)
     let pool_clone = pool.clone();
@@ -142,7 +149,7 @@ async fn main() {
         axum::serve(listener, app).await.unwrap();
     } else {
         let app_clone = app.clone();
-        
+
         let ws_handle = tokio::spawn(async move {
             info!("Menjalankan server WebSocket di ws://{}", addr_ws);
             let listener = tokio::net::TcpListener::bind(&addr_ws).await.unwrap();
