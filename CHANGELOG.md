@@ -21,6 +21,13 @@ versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   skema produksi diprovisi lewat psql/sqlx-cli (simple protocol):
   `psql "$DATABASE_URL" --set ON_ERROR_STOP=1 -f migrations/0002_postgres_evolution.sql`.
   Server tetap berjalan meski ada statement yang dilewati dan mencatat warning.
+- `DATABASE_URL` runtime wajib memakai **port 5432 (session pooler)**, bukan 6543
+  (transaction pooler). Port 6543 membuat sqlx menyiapkan statement dengan nama
+  yang bertabrakan di session backend reuse → **query gagal acak**
+  (`prepared statement "sqlx_s_*" already exists`): data/admin tampak kosong dan
+  guard admin yang fallback `SELECT role ...` ikut gagal hingga memunculkan 401.
+  Terverifikasi secara kontinu (300 request): 6543 = 0% sukses, 5432 = 100%.
+  `psql` (simple protocol) aman di kedua port.
 
 ## [1.1.0] - 2026-09-14
 

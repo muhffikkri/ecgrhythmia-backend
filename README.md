@@ -127,6 +127,12 @@ Aplikasi ini dilengkapi dengan pengujian unit dan pengujian integrasi yang kompr
 > 1. **PostgreSQL langsung** (bukan pooler) sebagai `DATABASE_URL` saat `cargo check`/`test`, atau
 > 2. **offline cache** yang sudah di-commit di folder `.sqlx/`:
 >    `SQLX_OFFLINE=true cargo test` (tidak memerlukan koneksi DB saat kompilasi).
+>
+> **CATATAN port pooler untuk RUNTIME (bukan build/migrate):** di proyek Supabase ini,
+> `DATABASE_URL` saat server **dijalankan** wajib memakai port **5432** (session pooler).
+> Port **6543** (transaction pooler) memicu kegagalan acak `prepared statement
+> "sqlx_s_*" already exists` pada query runtime (terverifikasi: 0% sukses di 6543 vs
+> 100% di 5432). `psql` (simple protocol) aman di kedua port.
 
 - **Di Windows (PowerShell):**
   ```powershell
@@ -161,6 +167,12 @@ Pastikan `DATABASE_URL` berisi connection string PostgreSQL yang valid, lalu jal
 > 1. **PostgreSQL langsung** (bukan pooler) sebagai `DATABASE_URL` saat `cargo check`/`test`, atau
 > 2. **offline cache** yang sudah di-commit di folder `.sqlx/`:
 >    `SQLX_OFFLINE=true cargo build --release` (tanpa memerlukan koneksi DB sama sekali).
+>
+> **CATATAN port pooler untuk RUNTIME (bukan build/migrate):** saat server **dijalankan**,
+> `DATABASE_URL` wajib memakai port **5432** (session pooler). Port **6543**
+> (transaction pooler) memicu kegagalan acak `prepared statement "sqlx_s_*" already
+> exists` pada query runtime — mulai dari data kosong hingga 401 (guard role yang
+> fallback ke DB ikut gagal). `psql` (simple protocol) aman di kedua port.
 
 Runner `scripts/test-all.ps1` menjalankan migrasi, pemeriksaan formatting, dan seluruh
 target Rust. Gunakan `./scripts/test-all.ps1 -SkipMigration` hanya untuk mengisolasi
