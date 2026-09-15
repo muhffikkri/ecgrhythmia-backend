@@ -20,8 +20,26 @@ pub async fn create_pool(database_url: &str) -> PgPool {
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
+    // CATATAN (Supabase pooler): DDL tidak boleh dijalankan lewat extended
+    // protocol yang dipersiapkan (prepared) di atas pooler — koneksi baru yang
+    // menyiapkan statement dengan nama ulang "sqlx_s_*" akan bertabrakan dengan
+    // statement yang masih tersisa di session backend reuse, memunculkan
+    // `prepared statement "sqlx_s_*" already exists`.
+    // Karenanya migrasi BERSIFAT BEST-EFFORT: bila gagal (mis. di atas pooler)
+    // dicatat sebagai warning dan server tetap berjalan. Skema produksi yang
+    // benar diprovisi lewat psql/sqlx-cli (simple protocol):
+    //   psql "$DATABASE_URL" --set ON_ERROR_STOP=1 -f migrations/0001_initial.sql
+    //   psql "$DATABASE_URL" --set ON_ERROR_STOP=1 -f migrations/0002_postgres_evolution.sql
+    fn warn_skip(sql: &str, e: &sqlx::Error) {
+        tracing::warn!(
+            "Migrasi skema dilewati — provision lewat psql/sqlx-cli ({}): {}",
+            sql,
+            e
+        );
+    }
+
     let queries = [
-        "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT, role TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP, profile_photo TEXT, status TEXT DEFAULT 'Offline')",
+        "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT, role TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP, profile_photo TEXT, status TEXT DEFAULT 'Offline')",
         "CREATE TABLE IF NOT EXISTS doctors (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS patients (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, date_of_birth DATE, age INTEGER DEFAULT 0, gender TEXT, primary_doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL, device_id TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, mqtt_broker TEXT, mqtt_port INTEGER, mqtt_topic TEXT, mqtt_username TEXT, mqtt_password TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
@@ -30,13 +48,16 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     ];
 
     for q in queries.iter() {
-        sqlx::query(*q).execute(pool).await?;
+        if let Err(e) = sqlx::query(*q).execute(pool).await {
+            warn_skip(q, &e);
+        }
     }
 
     // ALTER TABLE ADD COLUMN IF NOT EXISTS untuk evolusi skema pada database yang sudah ada
     // (CREATE TABLE IF NOT EXISTS tidak akan mengubah tabel eksisting)
     let alter_queries = [
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_hash TEXT",
+        "ALTER TABLE accounts ALTER COLUMN created_at SET NOT NULL",
         "ALTER TABLE patients ADD COLUMN IF NOT EXISTS date_of_birth DATE",
         "ALTER TABLE patients ADD COLUMN IF NOT EXISTS age INTEGER DEFAULT 0",
         "ALTER TABLE sessions ADD COLUMN IF NOT EXISTS doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL",
@@ -51,7 +72,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
 
     for q in alter_queries.iter() {
         if let Err(e) = sqlx::query(*q).execute(pool).await {
-            tracing::warn!("ALTER TABLE dilewati ({}): {}", q, e);
+            warn_skip(q, &e);
         }
     }
 

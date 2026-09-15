@@ -244,7 +244,12 @@ sudo apt update && sudo apt install -y sqlcipher postgresql-client python3-psyco
    ./target/release/ecg-backend
    ```
 
-   Server otomatis menjalankan kembali `run_migrations` saat start (idempoten).
+   Server otomatis menjalankan kembali `run_migrations` saat start. Migrasi
+   in-process itu **best-effort** dan tidak fatal: di atas pooler Supabase DDL
+   via extended/prepared protocol ditolak (`prepared statement "sqlx_s_*" already
+   exists`), jadi statement yang gagal dicatat sebagai warning dan server tetap
+   berjalan. **Skema produksi harus diprovisi lewat psql (simple protocol) pada
+   langkah 2 di atas**, bukan bergantung pada `run_migrations` di startup.
 
 > **Regenerasi offline cache `.sqlx/`**: install `cargo install sqlx-cli --no-default-features
 > --features postgres,rustls --version 0.7.4`, hubungkan `DATABASE_URL` ke PostgreSQL **langsung**,
@@ -282,7 +287,7 @@ Aplikasi menggunakan **PostgreSQL (supaya kompatibel dengan Supabase)** sebagai 
 
 - **Fungsi Utama**: Menyimpan **Akun Pengguna**, **Profil Dokter & Pasien**, **Status Perangkat**, dan **Metadata Riwayat Sesi Medis** (`sessions`, `frame_records`, `accounts`, `doctors`, `patients`, `devices`).
 - **Connection Pooling (`sqlx`)**: Akses database dikelola pool asinkron (`PgPool`) untuk memproses data paralel.
-- **Skema Otomatis**: Saat server dijalankan, `db::postgres::run_migrations` mengeksekusi `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS`. Skema versioned tersedia di `migrations/` (`0001_initial.sql`, `0002_postgres_evolution.sql`). Skema lama yang sudah berisi data aman di-*upgrade* (kolom baru ditambahkan, konstrain disesuaikan) tanpa menghapus data.
+- **Skema Otomatis (Best-Effort)**: Saat server dijalankan, `db::postgres::run_migrations` mencoba `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ADD COLUMN IF NOT EXISTS`, namun **tidak fatal** bila gagal — mis. di atas pooler Supabase yang menolak DDL via prepared protocol (`prepared statement "sqlx_s_*" already exists`); statement gagal hanya dicatat sebagai warning dan server tetap berjalan. Skema versioned tersedia di `migrations/` (`0001_initial.sql`, `0002_postgres_evolution.sql`) dan **harus diprovisi lewat `psql`** (simple protocol) untuk produksi. Skema lama yang sudah berisi data aman di-*upgrade* (kolom baru ditambahkan, konstrain disesuaikan) tanpa menghapus data.
 - **Data sinyal EKG**: Data frame mentah disimpan sebagai file `records/<session_id>.jsonl`; database hanya menyimpan `file_path` dan metadata frame.
 
 ---

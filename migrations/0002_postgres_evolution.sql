@@ -21,6 +21,9 @@ BEGIN;
 -- accounts
 -- ---------------------------------------------------------------
 ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_hash TEXT;
+-- created_at harus NOT NULL supaya konsisten dengan macro/offline cache sqlx
+-- (aman: akun yang ada tidak pernah menyimpan NULL di kolom ini).
+ALTER TABLE accounts ALTER COLUMN created_at SET NOT NULL;
 
 -- ---------------------------------------------------------------
 -- patients

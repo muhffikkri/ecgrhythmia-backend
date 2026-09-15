@@ -3,6 +3,25 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Diperbaiki
+
+- `accounts.created_at` kini dijamin `NOT NULL` di semua lingkungan (migrasi
+  `0002` + DDL inline `run_migrations`). Sebelumnya kolom itu nullable di
+  database Supabase yang sudah ada, sehingga macro `sqlx::query!` yang
+  menyiapkan query saat kompilasi mengetik kolom sebagai `Option` dan membuat
+  `cargo build` di VPS gagal dengan `no method to_rfc3339 ... for Option`.
+  Selalu pakai `SQLX_OFFLINE=true` pada build agar kompilasi konsisten memakai
+  offline cache yang sudah di-commit di `.sqlx/`.
+- `run_migrations` di startup kini **best-effort**: DDL yang dijalankan pada
+  waktu server mulai tidak lagi mematikan proses bila gagal (sebelumnya panic
+  `Database migration failed: prepared statement "sqlx_s_*" already exists`).
+  Pooler Supabase tidak mendukung DDL via extended/prepared protocol, sehingga
+  skema produksi diprovisi lewat psql/sqlx-cli (simple protocol):
+  `psql "$DATABASE_URL" --set ON_ERROR_STOP=1 -f migrations/0002_postgres_evolution.sql`.
+  Server tetap berjalan meski ada statement yang dilewati dan mencatat warning.
+
 ## [1.1.0] - 2026-09-14
 
 ### Ditambahkan
@@ -57,5 +76,3 @@ versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   sudah ada dan seluruh referensi id di tabel anak (`doctors`, `patients`,
   `frame_records`) di-remap otomatis, sehingga migrasi tidak lagi gagal dengan
   `duplicate key value violates unique constraint "accounts_email_key"`.
-
-## [Unreleased]
