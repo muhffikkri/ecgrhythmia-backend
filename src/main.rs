@@ -36,15 +36,25 @@ async fn main() {
     // 2. Muat Konfigurasi dari berkas .env
     let config = config::AppConfig::load();
 
-    // 3. Inisialisasi Database Pool PostgreSQL asinkron menggunakan sqlx
+    // 3. Inisialisasi Database Pool PostgreSQL asinkron menggunakan sqlx.
+    // Koneksi gagal TIDAK lagi menghentikan proses: create_pool mencoba
+    // berulang dengan backoff dan service tetap boot supaya endpoint auth,
+    // /api/health, dan WebSocket masih bisa dihubungi.
     let pool = db::postgres::create_pool(&config.database_url).await;
 
-    // Lakukan auto-migration skema database pada saat startup
-    if let Err(e) = db::postgres::run_migrations(&pool).await {
-        error!("Gagal menjalankan auto-migrations database: {}", e);
-        panic!("Database migration failed: {}", e);
+    let db_health = db::postgres::DbHealth::new();
+    db_health.prime(db::postgres::is_healthy(&pool).await);
+    if !db_health.cached().unwrap_or(false) {
+        error!("Database tidak dapat dihubungi saat startup — service jalan dalam mode degraded (endpoint data akan membalas 503).");
     }
-    info!("Auto-migrations database PostgreSQL berhasil diselesaikan.");
+
+    // Auto-migration bersifat best-effort. Kegagalan tidak boleh mematikan
+    // service: release profile memakai `panic = "abort"`, sehingga panic di
+    // sini akan membuat systemd gagal start terus-menerus.
+    if let Err(e) = db::postgres::run_migrations(&pool).await {
+        error!("Auto-migrations database gagal: {}", e);
+    }
+    info!("Auto-migrations database PostgreSQL selesai (best-effort).");
 
     // 4. Buat daftar klien WebSocket (ClientList) asinkron yang thread-safe
     let clients = network::websocket::ClientList::default();
@@ -112,7 +122,12 @@ async fn main() {
         jwt_secret: config.supabase_jwt_secret.clone(),
         jwks,
         api_url: format!("http://{}:{}", config.host_ip, config.rest_port),
+        db_health,
     };
+
+    // Pantau kesehatan database terus-menerus; statusnya dibaca middleware
+    // `require_db` tanpa query tambahan per request.
+    api::routes::spawn_db_health_monitor(app_state.clone());
 
     let mut app = api::routes::create_router(app_state);
 

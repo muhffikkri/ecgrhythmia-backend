@@ -5,18 +5,156 @@ use std::collections::HashMap;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::str::FromStr;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tracing::{error, info};
 
+/// Berapa lama menunggu koneksi pertama ke PostgreSQL sebelum menyerah.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Berapa kali mencoba koneksi sebelum menyerah dan boot dalam mode degraded.
+const CONNECT_ATTEMPTS: u32 = 3;
+
+/// Batas bawah dan atas jeda percobaan ulang koneksi.
+const RETRY_MIN: Duration = Duration::from_secs(1);
+const RETRY_MAX: Duration = Duration::from_secs(5);
+
+/// Koneksi dianggap hidup setelah `SELECT 1` berhasil.
 pub async fn create_pool(database_url: &str) -> PgPool {
-    let connect_opts = PgConnectOptions::from_str(database_url)
-        .expect("URL PostgreSQL tidak valid")
-        .statement_cache_capacity(0);
-    PgPoolOptions::new()
-        .max_connections(5)
-        .connect_with(connect_opts)
+    let connect_opts = match PgConnectOptions::from_str(database_url) {
+        Ok(o) => o.statement_cache_capacity(0),
+        Err(e) => {
+            // URL rusak tidak akan membaik dengan sendirinya, tapi service tetap
+            // harus start supaya endpoint lain (auth, health) tetap bisa probed.
+            error!("URL PostgreSQL tidak valid: {}", e);
+            return match PgPoolOptions::new().connect_lazy(database_url) {
+                Ok(p) => p,
+                Err(e2) => panic!("URL PostgreSQL tidak valid: {} / {}", e, e2),
+            };
+        }
+    };
+
+    let mut delay = RETRY_MIN;
+
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        let opts = connect_opts.clone();
+
+        match tokio::time::timeout(
+            CONNECT_TIMEOUT,
+            PgPoolOptions::new()
+                .max_connections(5)
+                .acquire_timeout(CONNECT_TIMEOUT)
+                .connect_with(opts),
+        )
         .await
-        .expect("Gagal terhubung ke Supabase PostgreSQL")
+        {
+            Ok(Ok(pool)) => {
+                if attempt > 1 {
+                    info!("Berhasil terhubung ke PostgreSQL setelah {} percobaan.", attempt);
+                }
+                return pool;
+            }
+            Ok(Err(e)) => {
+                error!(
+                    "Gagal terhubung ke PostgreSQL (percobaan {}/{}): {}",
+                    attempt, CONNECT_ATTEMPTS, e
+                );
+            }
+            Err(_) => {
+                error!(
+                    "Koneksi PostgreSQL timeout > {:?} (percobaan {}/{}).",
+                    CONNECT_TIMEOUT, attempt, CONNECT_ATTEMPTS
+                );
+            }
+        }
+
+        if attempt < CONNECT_ATTEMPTS {
+            tokio::time::sleep(delay).await;
+            delay = (delay * 2).min(RETRY_MAX);
+        }
+    }
+
+    // Semua percobaan gagal. Kembalikan pool LAZY: tidak ada koneksi yang
+    // dicoba sampai ada query, sehingga startup tetap lanjut dan endpoint
+    // tetap bisa dihubungi. Query akan gagal saat dipanggil, dan middleware
+    // `require_db` mengubahnya jadi 503 `database_unavailable`.
+    error!(
+        "PostgreSQL tidak dapat dihubungi setelah {} percobaan — boot dalam mode degraded.",
+        CONNECT_ATTEMPTS
+    );
+    match PgPoolOptions::new()
+        .max_connections(5)
+        .acquire_timeout(CONNECT_TIMEOUT)
+        .connect_lazy(database_url)
+    {
+        Ok(pool) => pool,
+        Err(e) => panic!("URL PostgreSQL tidak valid: {}", e),
+    }
+}
+
+/// `true` bila pool bisa menjalankan query sekarang juga.
+pub async fn is_healthy(pool: &PgPool) -> bool {
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(pool),
+    )
+    .await
+    .map(|r| r.is_ok())
+    .unwrap_or(false)
+}
+
+/// Status kesehatan database yang di-cache.
+///
+/// `SELECT 1` di setiap request akan menambah latensi dan membebani pool saat
+/// database sedang lambat, jadi hasil probe disimpan sebentar. Status awal
+/// `None` (belum pernah dicek) dianggap "boleh lewat" supaya request pertama
+/// tidak tertolak hanya karena probe belum selesai.
+#[derive(Clone)]
+pub struct DbHealth {
+    state: std::sync::Arc<std::sync::RwLock<Option<(bool, Instant)>>>,
+    ttl: Duration,
+}
+
+impl DbHealth {
+    pub fn new() -> Self {
+        Self {
+            state: std::sync::Arc::new(std::sync::RwLock::new(None)),
+            ttl: Duration::from_secs(5),
+        }
+    }
+
+    /// Kembalikan status cache bila masih segar, tanpa menyentuh jaringan.
+    pub fn cached(&self) -> Option<bool> {
+        self.state
+            .read()
+            .ok()
+            .and_then(|g| *g)
+            .filter(|(_, at)| at.elapsed() < self.ttl)
+            .map(|(up, _)| up)
+    }
+
+    /// Catat hasil probe terbaru.
+    pub fn record(&self, up: bool) {
+        if let Ok(mut g) = self.state.write() {
+            *g = Some((up, Instant::now()));
+        }
+    }
+
+    /// Set status awal saat boot supaya probe pertama tidak perlu menunggu.
+    pub fn prime(&self, up: bool) {
+        self.record(up);
+    }
+
+    /// `true` bila request boleh diteruskan ke handler.
+    pub fn allows(&self) -> bool {
+        self.cached().unwrap_or(true)
+    }
+}
+
+impl Default for DbHealth {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {

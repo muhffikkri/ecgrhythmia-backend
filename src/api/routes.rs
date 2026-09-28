@@ -35,6 +35,7 @@ pub struct AppState {
     pub jwt_secret: String,
     pub jwks: crate::api::jwks::Jwks,
     pub api_url: String,
+    pub db_health: crate::db::postgres::DbHealth,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -3101,6 +3102,94 @@ async fn create_record_handler(State(state): State<AppState>, body: String) -> i
     }
 }
 
+/// Body respons saat database tidak bisa dihubungi.
+///
+/// Sengaja 503 (bukan 500) supaya frontend bisa membedakan "server rusak" dari
+/// "database sedang tidak tersedia" dan relancer request nanti, bukan
+/// infuriating user dengan error permanen.
+fn db_unavailable() -> axum::response::Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        axum::Json(serde_json::json!({
+            "error": "Database sedang tidak tersedia",
+            "code": "database_unavailable",
+            "retryable": true,
+        })),
+    )
+        .into_response()
+}
+
+/// `GET /api/health` — dipakai load balancer/probe dan untuk memastikan apakah
+/// service hidup meski database mati.
+async fn health_handler(State(state): State<AppState>) -> impl IntoResponse {
+    let cached = state.db_health.cached();
+    let database = match cached {
+        Some(up) => up,
+        None => {
+            let up = crate::db::postgres::is_healthy(&state.pool).await;
+            state.db_health.record(up);
+            up
+        }
+    };
+
+    // 503 supaya load balancer tahu DB perlu dicek, tapi body tetap informatif.
+    let status = if database {
+        StatusCode::OK
+    } else {
+        StatusCode::SERVICE_UNAVAILABLE
+    };
+
+    (
+        status,
+        axum::Json(serde_json::json!({
+            "status": if database { "ok" } else { "degraded" },
+            "database": if database { "up" } else { "down" },
+            "es256": state.jwks.is_enabled(),
+        })),
+    )
+}
+
+/// Gerbang 503 untuk route yang butuh database.
+///
+/// Hanya membaca status cache, jadi tidak menambah query per request. Efeknya:
+/// ketika Supabase tidak bisa dihubungi, frontend menerima
+/// `503 database_unavailable` yang eksplisit alih-alih `500` atau handler yang
+/// gagal di tengah jalan setelah connection timeout.
+async fn require_db(
+    State(state): State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    if req.uri().path() == "/api/health" {
+        return next.run(req).await;
+    }
+    if !state.db_health.allows() {
+        return db_unavailable();
+    }
+    next.run(req).await
+}
+
+/// Loop pemantau database. Status di-cache supaya request tidak perlu query
+/// tambahan hanya untuk mengecek kesehatan.
+pub fn spawn_db_health_monitor(state: AppState) {
+    tokio::spawn(async move {
+        let mut was_up = true;
+        loop {
+            let up = crate::db::postgres::is_healthy(&state.pool).await;
+            state.db_health.record(up);
+            if up != was_up {
+                if up {
+                    info!("Database kembali bisa dihubungi.");
+                } else {
+                    error!("Database tidak bisa dihubungi — endpoint data akan membalas 503.");
+                }
+                was_up = up;
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        }
+    });
+}
+
 pub fn create_router(state: AppState) -> Router {
     let cors = CorsLayer::new()
         .allow_origin([
@@ -3128,6 +3217,7 @@ pub fn create_router(state: AppState) -> Router {
         .allow_credentials(true);
 
     Router::new()
+        .route("/api/health", get(health_handler))
         .route("/api/auth/register", post(register_handler))
         .route("/api/auth/login", post(login_handler))
         .route("/api/auth/me", get(auth_me_handler))
@@ -3208,6 +3298,10 @@ pub fn create_router(state: AppState) -> Router {
         .route("/api/frames", post(frame_preregister_handler))
         .route("/api/frames/:id/session", put(frame_session_update_handler))
         .nest_service("/uploads", tower_http::services::ServeDir::new("uploads"))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            require_db,
+        ))
         .layer(DefaultBodyLimit::max(50 * 1024 * 1024))
         .layer(TraceLayer::new_for_http())
         .layer(cors)

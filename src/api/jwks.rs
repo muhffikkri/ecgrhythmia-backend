@@ -43,10 +43,20 @@ pub struct Jwks {
     url: Option<String>,
     keys: Arc<RwLock<HashMap<String, DecodingKey>>>,
     fetched_at: Arc<RwLock<Option<Instant>>>,
+    last_miss_refresh: Arc<RwLock<Option<Instant>>>,
     http: reqwest::Client,
 }
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
+
+/// Jeda minimum antar permintaan refresh yang dipicu `kid` tak dikenal.
+///
+/// `kid` tak dikenal bisa berarti dua hal: rotasi kunci Supabase (kunci baru
+/// sudah terbit tapi cache masih menyimpan yang lama) atau penyerang yang
+/// mengirim token sampah. Tanpa jeda, penyerang bisa memaksa backend
+/// memanggil JWKS pada setiap request. Jeda 60 detik membuat rotasi kunci
+/// pulih dalam ~1 menit, bukan menunggu `REFRESH_INTERVAL` penuh.
+const MISS_REFRESH_THROTTLE: Duration = Duration::from_secs(60);
 
 impl Jwks {
     pub fn new(url: Option<String>) -> Self {
@@ -59,6 +69,7 @@ impl Jwks {
             url,
             keys: Arc::new(RwLock::new(HashMap::new())),
             fetched_at: Arc::new(RwLock::new(None)),
+            last_miss_refresh: Arc::new(RwLock::new(None)),
             http,
         }
     }
@@ -144,13 +155,10 @@ impl Jwks {
         let key = match cached {
             Some(k) => k,
             None => {
-                if self
-                    .fetched_at
-                    .read()
-                    .unwrap()
-                    .map(|t| t.elapsed() < REFRESH_INTERVAL)
-                    .unwrap_or(false)
-                {
+                // `kid` belum ada di cache. Coba muat ulang, tapi tidak lebih
+                // dari sekali per MISS_REFRESH_THROTTLE supaya token sampah
+                // tidak bisa dipakai memaksa request jaringan tiap call.
+                if !self.claim_miss_refresh() {
                     return Err(JwtFailure::UnknownKid);
                 }
                 self.refresh().await.map_err(|e| {
@@ -180,6 +188,21 @@ impl Jwks {
                     _ => JwtFailure::Malformed,
                 }
             })
+    }
+
+    /// Klaim hak untuk melakukan satu refresh karena `kid` tak dikenal.
+    /// Mengembalikan `false` bila refresh miss terakhir masih dalam jeda.
+    fn claim_miss_refresh(&self) -> bool {
+        let mut slot = self.last_miss_refresh.write().unwrap();
+        if slot
+            .as_ref()
+            .map(|t| t.elapsed() < MISS_REFRESH_THROTTLE)
+            .unwrap_or(false)
+        {
+            return false;
+        }
+        *slot = Some(Instant::now());
+        true
     }
 
     /// Verifikasi signature ES256 lalu deserialize payload menjadi `T`.
@@ -286,8 +309,25 @@ mod tests {
     #[tokio::test]
     async fn rejects_unknown_kid() {
         let jwks = jwks_with_key("kid-lain");
+        // Klaim throttle di muka supaya jalur penolakan diuji tanpa menyentuh
+        // jaringan; fetch ke test.invalid memang gagal, tapi tidak relevan.
+        *jwks.last_miss_refresh.write().unwrap() = Some(Instant::now());
         let err = jwks.decode::<serde_json::Value>(TOKEN).await.unwrap_err();
         assert_eq!(err, JwtFailure::UnknownKid);
+    }
+
+    #[test]
+    fn miss_refresh_is_throttled() {
+        let jwks = jwks_with_key("kid-lain");
+        // Request pertama dengan kid asing boleh mencoba memuat ulang kunci.
+        assert!(jwks.claim_miss_refresh());
+        // Request berikutnya dalam jeda harus ditolak supaya penyerang tidak
+        // bisa memaksa fetch JWKS pada setiap request.
+        assert!(!jwks.claim_miss_refresh());
+        // Setelah jeda berlalu, lockir boleh lagi.
+        *jwks.last_miss_refresh.write().unwrap() =
+            Some(Instant::now() - MISS_REFRESH_THROTTLE - Duration::from_secs(1));
+        assert!(jwks.claim_miss_refresh());
     }
 
     #[tokio::test]
