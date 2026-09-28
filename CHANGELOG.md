@@ -5,7 +5,100 @@ versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Ditambahkan
+
+- **Verifikasi signature ES256 lewat JWKS Supabase** (`src/api/jwks.rs`).
+  Proyek ini memang memakai kunci asimetris: endpoint
+  `/auth/v1/.well-known/jwks.json` mengembalikan `alg: ES256`, `crv: P-256`
+  beserta `kid`. Sebelumnya token Supabase dari
+  `supabase.auth.signInWithPassword` tidak bisa diverifikasi sama sekali
+  karena backend hanya mendukung HS256.
+  - Kunci publik diambil dari JWKS saat startup lalu di-cache di memory, dan
+    di-refresh tiap 1 jam atau saat ditemukan `kid` baru.
+  - Koordinat JWK `x`/`y` disusun menjadi SPKI DER lalu PEM secara manual,
+    karena `jsonwebtoken` hanya menerima kunci EC dalam bentuk PEM. 6 unit
+    test menutup jalur ini, termasuk verifikasi signature ES256 sungguhan
+    (dibuat dengan `openssl`) dan penolakan token yang dimodifikasi.
+  - Algoritma dibaca dari header token dan hanya jalur itu yang dicoba, jadi
+    tidak ada algorithm confusion (token ES256 tak akan dicoba dengan HS256).
+  - Konfigurasi lewat `SUPABASE_URL` (diturunkan otomatis) atau
+    `SUPABASE_JWKS_URL` eksplisit. Kosongkan keduanya untuk menonaktifkan
+    ES256; HS256 tetap bekerja.
+  - Ketergantungan baru: `reqwest` (fitur `rustls`, tanpa OpenSSL).
+- `accounts.auth_id` + migrasi `migrations/0003_supabase_auth_link.sql` untuk
+  menautkan akun lokal dengan UUID user Supabase Auth, beserta index unik
+  parsial. Kolom juga masuk ke DDL inline `run_migrations`.
+- Binary `src/bin/link_auth.rs` untuk melihat dan mengisi `auth_id`
+  (`cargo run --bin link_auth`, atau `link_auth <email> <uuid>`).
+- `POST /api/auth/refresh`: perpanjangan sesi dengan sliding window. Token
+  kedaluwarsa tetap bisa diperpanjang asal **signature sah**, akun masih ada,
+  dan umur token belum melebihi `REFRESH_WINDOW_DAYS` (7 hari, dibaca dari klaim
+  `iat`). Response mengembalikan token baru beserta `role` dan `user_id` —
+  peran selalu diambil ulang dari tabel `accounts`, jadi perubahan role
+  langsung berlaku tanpa perlu login ulang.
+- `GET /api/auth/me`: endpoint yang sebelumnya sudah ada sebagai
+  `auth_me_handler` tapi **tidak pernah didaftarkan** sebagai route, sehingga
+  tidak bisa dipanggil. Sekarang terdaftar dan mengembalikan `user_id`
+  (id profil, konsisten dengan `/api/auth/login`), `account_id`, `role`, dan
+  `is_admin`.
+- Klaim `iat` (opsional) ditambahkan ke `Claims` dan kini diisi saat token
+  dibuat, dipakai untuk batas jendela refresh.
+
+### Keamanan
+
+- **Privilege escalation saat registrasi (KRITIS).** `POST /api/auth/register`
+  memakai `role` dari body request tanpa validasi, lalu menyimpankannya ke
+  `accounts.role` dan menerbitkannya sebagai klaim `app_metadata.role`.
+  Akibatnya siapa pun bisa mendaftarkan akun `role: "admin"` dan langsung
+  mendapat akses penuh ke `/api/admin/*` (daftar pasien/dokter, statistik,
+  sinkronisasi, impersonasi) tanpa perlu login admin. Diverifikasi: registrasi
+  `role: "admin"` lalu `GET /api/admin/users` → **200**. Perbaikan: role
+  registrasi publik dibatasi allowlist `pasien` / `dokter`; nilai lain
+  ditolak **403 `invalid_role`**. Akun admin tidak lagi bisa dibuat lewat
+  endpoint publik.
+- Pelacakan 401 dipisah agar frontend bisa bereaksi tepat: `missing_token`,
+  `malformed_token`, `invalid_signature`, `token_expired`, `jwt_not_configured`.
+  `validate_jwt` (yang hanya mengembalikan `Option`) digantikan
+  `decode_claims` yang mengembalikan `Result<_, JwtError>`.
+- `AdminClaims` kini membalas **403 `not_admin`** (bukan 401) ketika token
+  valid tetapi role-nya bukan admin — 401 berarti "tidak terautentikasi", 403 berarti
+  "tidak berwenang", sehingga frontend tidak salah mengarahkan user ke halaman
+  login untuk akun dokter/pasien yang memang tidak boleh.
+- Refresh memverifikasi signature dan keberadaan akun; token forged maupun
+  `alg=none` tetap ditolak. Teks CHANGELOG sebelumnya menyebut
+  `validate_jwt`; helper tersebut sudah dihapus.
+- **Tiga endpoint tulis tanpa proteksi auth** (`src/api/routes.rs`):
+  `POST /api/patients/:patient_id/connect`,
+  `POST /api/patients/:patient_id/disconnect`, dan
+  `POST /api/devices/:device_id/assign` tidak punya extractor auth sama
+  sekali — handler-nya menerima `State` + path + body tanpa
+  `AdminClaims`, sehingga siapa pun tanpa token bisa mengubah
+  `patients.primary_doctor_id` dan `patients.device_id`, dan endpoint
+  membalas `200 {"success": true}`. Ketiganya kini memakai `AdminClaims`.
+  Verifikasi: tanpa token **401**, dengan token admin **200**.
+- `GET /api/devices` dan `GET /api/admin/devices` juga tanpa auth dan
+  membocorkan `mqtt_broker`/`mqtt_port`/`mqtt_topic`/`mqtt_username` ke
+  publik; keduanya kini memakai `AdminClaims`.
+- Catatan: `mqtt_password` ternyata **tidak pernah** ikut serialisasi —
+  `DeviceRecord` tidak memuat kolom tersebut, hanya `SELECT` saat membuat
+  listener MQTT dan saat menulis ke `devices`. Tidak ada perubahan perlu
+  di sini.
+
 ### Diperbaiki
+
+- **Pembacaan role dari token Supabase.** `claims.role` milik Supabase berisi
+  `"authenticated"`, bukan nama peran, sehingga membacanya sebagai role
+  membuat semua token ditolak. `Claims::token_role` kini mengabaikan nilai
+  `"authenticated"` dan memakai urutan `app_metadata.role` →
+  `user_metadata.role` → `claims.role`, lalu jatuh ke database
+  (`accounts.auth_id` → `accounts.id` → `accounts.email`).
+- Akun admin tidak lagi bergantung pada id hardcoded `acc_admin` yang tidak
+  pernah ada (id admin bawaan adalah UUID). Pemeriksaan sekarang murni
+  berdasarkan `role == "admin"` yang diambil dari token atau, bila kosong,
+  dari database.
+- `auth_me_handler` dan `doctor_impersonate_handler` sebelumnya mengembalikan
+  `user_id` berupa `accounts.id`, tidak konsisten dengan `/api/auth/login` yang
+  mengembalikan id profil. Keduanya kini memakai helper `resolve_profile_id`.
 
 - `accounts.created_at` kini dijamin `NOT NULL` di semua lingkungan (migrasi
   `0002` + DDL inline `run_migrations`). Sebelumnya kolom itu nullable di

@@ -12,7 +12,9 @@ use axum::{
 use base64::{engine::general_purpose::STANDARD as base64_engine, Engine as _};
 use bcrypt::{hash, DEFAULT_COST};
 use chrono::Utc;
-use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header as JwtHeader, Validation};
+use jsonwebtoken::{
+    decode, encode, Algorithm, DecodingKey, EncodingKey, Header as JwtHeader, Validation,
+};
 use serde::{Deserialize, Serialize};
 use sqlx::PgPool;
 use std::collections::HashMap;
@@ -31,6 +33,7 @@ pub struct AppState {
     pub pacer_tx: tokio::sync::mpsc::UnboundedSender<crate::models::device::DevicePayload>,
     pub db_tx: tokio::sync::mpsc::UnboundedSender<crate::models::device::DevicePayload>,
     pub jwt_secret: String,
+    pub jwks: crate::api::jwks::Jwks,
     pub api_url: String,
 }
 
@@ -44,7 +47,77 @@ pub struct Claims {
     pub sub: String,
     pub app_metadata: Option<AppMetadata>,
     pub exp: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub iat: Option<usize>,
+    /// Token Supabase Auth mengisi `role: "authenticated"` di level atas dan
+    /// menyimpan peran sebenarnya di `app_metadata.role` (atau metadata user).
+    /// Field ini hanya dipakai sebagai fallback terakhir.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_metadata: Option<AppMetadata>,
 }
+
+impl Claims {
+    /// Peran dari token. `app_metadata` menang lebih dulu karena `claims.role`
+    /// milik Supabase berisi "authenticated", bukan nama peran.
+    fn token_role(&self) -> String {
+        self.app_metadata
+            .as_ref()
+            .and_then(|m| m.role.clone())
+            .filter(|r| !r.is_empty() && r != "authenticated")
+            .or_else(|| {
+                self.user_metadata
+                    .as_ref()
+                    .and_then(|m| m.role.clone())
+                    .filter(|r| !r.is_empty() && r != "authenticated")
+            })
+            .or_else(|| {
+                self.role
+                    .clone()
+                    .filter(|r| !r.is_empty() && r != "authenticated")
+            })
+            .unwrap_or_default()
+    }
+}
+
+/// Alasan penolakan token, dibedakan agar frontend bisa bereaksi tepat
+/// (refresh otomatis saat kedaluwarsa vs. arahkan login ulang).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JwtError {
+    Missing,
+    Malformed,
+    InvalidSignature,
+    Expired,
+    Misconfigured,
+}
+
+impl JwtError {
+    fn code(self) -> &'static str {
+        match self {
+            JwtError::Missing => "missing_token",
+            JwtError::Malformed => "malformed_token",
+            JwtError::InvalidSignature => "invalid_signature",
+            JwtError::Expired => "token_expired",
+            JwtError::Misconfigured => "jwt_not_configured",
+        }
+    }
+
+    fn message(self) -> &'static str {
+        match self {
+            JwtError::Missing => "Header Authorization tidak ditemukan",
+            JwtError::Malformed => "Format token tidak valid",
+            JwtError::InvalidSignature => "Signature token tidak valid",
+            JwtError::Expired => "Sesi tidak valid atau kedaluwarsa",
+            JwtError::Misconfigured => "JWT secret belum dikonfigurasi",
+        }
+    }
+}
+
+const TOKEN_TTL_HOURS: i64 = 24;
+const REFRESH_WINDOW_DAYS: i64 = 7;
 
 pub struct FullClaims {
     pub sub: String,
@@ -64,39 +137,40 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
 
-        if let Some(auth_header) = parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-        {
-            if auth_header.starts_with("Bearer ") {
-                let token = &auth_header[7..];
-                if let Some(claims) = validate_jwt(token, &app_state.jwt_secret) {
-                    let mut role = claims.app_metadata.and_then(|m| m.role).unwrap_or_default();
+        let reject = |err: JwtError| {
+            let status = match err {
+                JwtError::Misconfigured => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::UNAUTHORIZED,
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": err.message(),
+                    "code": err.code(),
+                })),
+            )
+        };
 
-                    if role.is_empty() {
-                        if let Ok(record) =
-                            sqlx::query!("SELECT role FROM accounts WHERE id = $1", claims.sub)
-                                .fetch_one(&app_state.pool)
-                                .await
-                        {
-                            role = record.role;
-                        }
-                    }
+        let token = bearer_token(parts).map_err(reject)?;
+        let claims = decode_claims_with_jwks(token, &app_state.jwt_secret, Some(&app_state.jwks))
+            .await
+            .map_err(reject)?;
 
-                    if role == "admin" || claims.sub == "acc_admin" {
-                        return Ok(AdminClaims(FullClaims {
-                            sub: claims.sub,
-                            role,
-                        }));
-                    }
-                }
-            }
+        let role = resolve_role(&claims, &app_state.pool).await;
+
+        if role == "admin" {
+            return Ok(AdminClaims(FullClaims {
+                sub: claims.sub,
+                role,
+            }));
         }
 
         Err((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Admin access required"})),
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "Admin access required",
+                "code": "not_admin",
+            })),
         ))
     }
 }
@@ -114,43 +188,71 @@ where
     async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
         let app_state = AppState::from_ref(state);
 
-        let auth_header = parts
-            .headers
-            .get("Authorization")
-            .and_then(|v| v.to_str().ok())
-            .ok_or((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Header Authorization tidak ditemukan"})),
-            ))?;
+        let reject = |err: JwtError| {
+            let status = match err {
+                JwtError::Misconfigured => StatusCode::INTERNAL_SERVER_ERROR,
+                _ => StatusCode::UNAUTHORIZED,
+            };
+            (
+                status,
+                Json(serde_json::json!({
+                    "error": err.message(),
+                    "code": err.code(),
+                })),
+            )
+        };
 
-        if !auth_header.starts_with("Bearer ") {
-            return Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "Format token tidak valid"})),
-            ));
-        }
+        let token = bearer_token(parts).map_err(reject)?;
+        let claims = decode_claims_with_jwks(token, &app_state.jwt_secret, Some(&app_state.jwks))
+            .await
+            .map_err(reject)?;
 
-        let token = &auth_header[7..];
-        let claims = validate_jwt(token, &app_state.jwt_secret).ok_or((
-            StatusCode::UNAUTHORIZED,
-            Json(serde_json::json!({"error": "Sesi tidak valid atau kedaluwarsa"})),
-        ))?;
-
-        let mut role = claims.app_metadata.and_then(|m| m.role).unwrap_or_default();
-        if role.is_empty() {
-            if let Ok(record) = sqlx::query!("SELECT role FROM accounts WHERE id = $1", claims.sub)
-                .fetch_one(&app_state.pool)
-                .await
-            {
-                role = record.role;
-            }
-        }
+        let role = resolve_role(&claims, &app_state.pool).await;
 
         Ok(UserClaims(FullClaims {
             sub: claims.sub,
             role,
         }))
     }
+}
+
+/// Menentukan peran dari token, dengan berkonsultasi ke database bila perlu.
+///
+/// Token dari backend sendiri: `sub` = `accounts.id`, role sudah ada di token.
+/// Token Supabase: `sub` = UUID Supabase Auth (bukan `accounts.id`), role
+/// biasanya ada di `app_metadata`; bila tidak, dicari lewat `accounts.auth_id`
+/// lalu `accounts.email`.
+async fn resolve_role(claims: &Claims, pool: &PgPool) -> String {
+    let from_token = claims.token_role();
+    if !from_token.is_empty() {
+        return from_token;
+    }
+
+    if let Ok(Some(record)) =
+        sqlx::query!("SELECT role FROM accounts WHERE auth_id = $1", claims.sub)
+            .fetch_optional(pool)
+            .await
+    {
+        return record.role;
+    }
+
+    if let Ok(Some(record)) = sqlx::query!("SELECT role FROM accounts WHERE id = $1", claims.sub)
+        .fetch_optional(pool)
+        .await
+    {
+        return record.role;
+    }
+
+    if let Some(email) = claims.email.as_ref().filter(|e| !e.is_empty()) {
+        if let Ok(Some(record)) = sqlx::query!("SELECT role FROM accounts WHERE email = $1", email)
+            .fetch_optional(pool)
+            .await
+        {
+            return record.role;
+        }
+    }
+
+    String::new()
 }
 
 #[derive(Serialize)]
@@ -337,36 +439,106 @@ pub struct ConfirmationResponse {
     pub message: String,
 }
 
-fn validate_jwt(token: &str, secret: &str) -> Option<Claims> {
-    if secret.is_empty() {
-        error!("JWT Validation error: SUPABASE_JWT_SECRET belum dikonfigurasi");
-        return None;
-    }
-
+fn jwt_validation() -> Validation {
     let mut validation = Validation::new(jsonwebtoken::Algorithm::HS256);
     validation.validate_aud = false;
     validation.required_spec_claims.clear();
+    validation
+}
 
-    match decode::<Claims>(
-        token,
-        &DecodingKey::from_secret(secret.as_bytes()),
-        &validation,
-    ) {
-        Ok(token_data) => Some(token_data.claims),
-        Err(e) => {
-            error!("JWT Validation error: {}", e);
-            None
+/// Verifikasi token dengan dua algoritma:
+///
+/// * **HS256** + `SUPABASE_JWT_SECRET` — token yang diterbitkan backend sendiri
+///   lewat `POST /api/auth/login`.
+/// * **ES256** lewat JWKS Supabase — token dari `supabase.auth.signInWithPassword`.
+///
+/// Algoritma diambil dari header token lalu hanya jalur itu yang dicoba, jadi
+/// tidak ada algorithm confusion: token ES256 tidak pernah diverifikasi dengan
+/// HS256 dan sebaliknya.
+async fn decode_claims_with_jwks(
+    token: &str,
+    secret: &str,
+    jwks: Option<&crate::api::jwks::Jwks>,
+) -> Result<Claims, JwtError> {
+    use jsonwebtoken::errors::ErrorKind;
+
+    let header = jsonwebtoken::decode_header(token).map_err(|_| JwtError::Malformed)?;
+
+    match header.alg {
+        Algorithm::ES256 => {
+            let jwks = jwks.ok_or(JwtError::Misconfigured)?;
+            jwks.decode::<Claims>(token).await.map_err(|f| match f {
+                crate::api::jwks::JwtFailure::Expired => JwtError::Expired,
+                crate::api::jwks::JwtFailure::InvalidSignature => JwtError::InvalidSignature,
+                crate::api::jwks::JwtFailure::Malformed => JwtError::Malformed,
+                crate::api::jwks::JwtFailure::UnknownKid
+                | crate::api::jwks::JwtFailure::Disabled => JwtError::InvalidSignature,
+            })
+        }
+        Algorithm::HS256 => {
+            if secret.is_empty() {
+                error!("JWT Validation error: SUPABASE_JWT_SECRET belum dikonfigurasi");
+                return Err(JwtError::Misconfigured);
+            }
+            decode::<Claims>(
+                token,
+                &DecodingKey::from_secret(secret.as_bytes()),
+                &jwt_validation(),
+            )
+            .map(|d| d.claims)
+            .map_err(|e| {
+                error!("JWT Validation error: {}", e);
+                match e.kind() {
+                    ErrorKind::ExpiredSignature => JwtError::Expired,
+                    ErrorKind::InvalidSignature | ErrorKind::InvalidAlgorithm => {
+                        JwtError::InvalidSignature
+                    }
+                    _ => JwtError::Malformed,
+                }
+            })
+        }
+        other => {
+            error!("JWT ditolak: algoritma tidak didukung ({:?})", other);
+            Err(JwtError::Malformed)
         }
     }
 }
 
+fn decode_claims_for_refresh(token: &str, secret: &str) -> Result<Claims, JwtError> {
+    if secret.is_empty() {
+        return Err(JwtError::Misconfigured);
+    }
+
+    let mut validation = jwt_validation();
+    validation.validate_exp = false;
+
+    decode::<Claims>(
+        token,
+        &DecodingKey::from_secret(secret.as_bytes()),
+        &validation,
+    )
+    .map(|token_data| token_data.claims)
+    .map_err(|e| {
+        use jsonwebtoken::errors::ErrorKind;
+        match e.kind() {
+            ErrorKind::InvalidSignature | ErrorKind::InvalidAlgorithm => JwtError::InvalidSignature,
+            _ => JwtError::Malformed,
+        }
+    })
+}
+
 fn create_jwt(sub: &str, role: &str, secret: &str) -> String {
+    let now = Utc::now();
     let claims = Claims {
         sub: sub.to_string(),
         app_metadata: Some(AppMetadata {
             role: Some(role.to_string()),
         }),
-        exp: (Utc::now() + chrono::Duration::hours(24)).timestamp() as usize,
+        exp: (now + chrono::Duration::hours(TOKEN_TTL_HOURS)).timestamp() as usize,
+        iat: Some(now.timestamp() as usize),
+        role: None,
+        email: None,
+        user_metadata: None,
     };
     encode(
         &JwtHeader::default(),
@@ -376,12 +548,33 @@ fn create_jwt(sub: &str, role: &str, secret: &str) -> String {
     .unwrap_or_default()
 }
 
+fn bearer_token(parts: &Parts) -> Result<&str, JwtError> {
+    parts
+        .headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.starts_with("Bearer "))
+        .map(|v| &v[7..])
+        .ok_or(JwtError::Missing)
+}
+
 // ROUTE HANDLERS
 async fn register_handler(
     State(state): State<AppState>,
     Json(req): Json<RegisterRequest>,
 ) -> impl IntoResponse {
     let account_id = Uuid::new_v4().to_string();
+
+    if !matches!(req.role.as_str(), "pasien" | "dokter") {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "success": false,
+                "message": "Role tidak valid",
+                "code": "invalid_role",
+            })),
+        );
+    }
 
     if let Ok(record) = sqlx::query!("SELECT id FROM accounts WHERE email = $1", req.email)
         .fetch_optional(&state.pool)
@@ -552,14 +745,132 @@ async fn get_recording_status(patient_id: &str, pool: &PgPool) -> serde_json::Va
         }),
     }
 }
-async fn auth_me_handler(claims: UserClaims) -> impl IntoResponse {
-    Json(AuthResponse {
-        success: true,
-        message: "Profil berhasil diambil".into(),
-        user_id: Some(claims.0.sub),
-        role: Some(claims.0.role),
-        token: None,
-    })
+async fn resolve_profile_id(account_id: &str, role: &str, pool: &PgPool) -> Option<String> {
+    match role {
+        "pasien" => sqlx::query!("SELECT id FROM patients WHERE account_id = $1", account_id)
+            .fetch_one(pool)
+            .await
+            .ok()
+            .map(|r| r.id),
+        "dokter" => sqlx::query!("SELECT id FROM doctors WHERE account_id = $1", account_id)
+            .fetch_one(pool)
+            .await
+            .ok()
+            .map(|r| r.id),
+        _ => Some(account_id.to_string()),
+    }
+}
+
+async fn auth_me_handler(claims: UserClaims, State(state): State<AppState>) -> impl IntoResponse {
+    let account_id = claims.0.sub;
+    let role = claims.0.role;
+
+    let profile_id = resolve_profile_id(&account_id, &role, &state.pool)
+        .await
+        .unwrap_or_else(|| account_id.clone());
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": "Profil berhasil diambil",
+            "user_id": profile_id,
+            "account_id": account_id,
+            "role": role,
+            "is_admin": role == "admin",
+        })),
+    )
+}
+
+async fn refresh_token_handler(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    let reject = |err: JwtError, status: StatusCode| {
+        (
+            status,
+            Json(serde_json::json!({
+                "success": false,
+                "message": err.message(),
+                "code": err.code(),
+            })),
+        )
+    };
+
+    let token = match headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.starts_with("Bearer "))
+        .map(|v| v[7..].to_string())
+    {
+        Some(t) => t,
+        None => return reject(JwtError::Missing, StatusCode::UNAUTHORIZED),
+    };
+
+    let claims = match decode_claims_for_refresh(&token, &state.jwt_secret) {
+        Ok(c) => c,
+        Err(err) => {
+            let status = if err == JwtError::Misconfigured {
+                StatusCode::INTERNAL_SERVER_ERROR
+            } else {
+                StatusCode::UNAUTHORIZED
+            };
+            return reject(err, status);
+        }
+    };
+
+    if let Some(iat) = claims.iat {
+        let age_days = (Utc::now().timestamp() - iat as i64) / 86_400;
+        if age_days > REFRESH_WINDOW_DAYS {
+            return reject(JwtError::Expired, StatusCode::UNAUTHORIZED);
+        }
+    } else {
+        info!("Refresh tanpa klaim iat (token lama), sub={}", claims.sub);
+    }
+
+    let account = match sqlx::query!("SELECT role FROM accounts WHERE id = $1", claims.sub)
+        .fetch_optional(&state.pool)
+        .await
+    {
+        Ok(Some(a)) => a,
+        Ok(None) => {
+            return (
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": "Akun tidak ditemukan",
+                    "code": "account_not_found",
+                })),
+            )
+        }
+        Err(e) => {
+            error!("Refresh: gagal query accounts: {}", e);
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "success": false,
+                    "message": "Gagal memverifikasi akun",
+                    "code": "lookup_failed",
+                })),
+            );
+        }
+    };
+
+    let role = account.role;
+    let token = create_jwt(&claims.sub, &role, &state.jwt_secret);
+    let profile_id = resolve_profile_id(&claims.sub, &role, &state.pool).await;
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({
+            "success": true,
+            "message": "Token diperbarui",
+            "user_id": profile_id,
+            "account_id": claims.sub,
+            "role": role,
+            "token": token,
+        })),
+    )
 }
 
 async fn register_profile_handler(
@@ -754,7 +1065,10 @@ async fn get_patient_sessions_handler(
     })
 }
 
-async fn get_devices_handler(State(state): State<AppState>) -> impl IntoResponse {
+async fn get_devices_handler(
+    _claims: AdminClaims,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     let devices = get_devices_from_db(&state.pool).await;
     Json(devices)
 }
@@ -1006,6 +1320,7 @@ async fn update_patient_profile_handler(
 }
 
 async fn connect_patient_handler(
+    _claims: AdminClaims,
     State(state): State<AppState>,
     AxumPath(patient_id): AxumPath<String>,
     Json(req): Json<ConnectPatientRequest>,
@@ -1035,6 +1350,7 @@ async fn connect_patient_handler(
 }
 
 async fn disconnect_patient_handler(
+    _claims: AdminClaims,
     State(state): State<AppState>,
     AxumPath(patient_id): AxumPath<String>,
 ) -> impl IntoResponse {
@@ -1139,6 +1455,7 @@ struct AssignRequest {
 }
 
 async fn assign_device_handler(
+    _claims: AdminClaims,
     State(state): State<AppState>,
     AxumPath(device_id): AxumPath<String>,
     Json(req): Json<AssignRequest>,
@@ -2813,6 +3130,8 @@ pub fn create_router(state: AppState) -> Router {
     Router::new()
         .route("/api/auth/register", post(register_handler))
         .route("/api/auth/login", post(login_handler))
+        .route("/api/auth/me", get(auth_me_handler))
+        .route("/api/auth/refresh", post(refresh_token_handler))
         .route(
             "/api/sessions",
             get(get_sessions_handler).post(create_session_handler),

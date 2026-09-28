@@ -13,6 +13,7 @@ pub struct AppConfig {
     pub mqtt_username: String,
     pub mqtt_password: String,
     pub supabase_jwt_secret: String,
+    pub supabase_jwks_url: Option<String>,
     pub database_url: String,
 }
 
@@ -74,6 +75,22 @@ impl AppConfig {
             .map(|s| s.replace("\"", ""))
             .expect("[Config] ERROR: SUPABASE_JWT_SECRET belum diset di .env!");
 
+        // Verifikasi ES256 (token Supabase Auth) memakai JWKS, bukan shared
+        // secret. URL bisa ditulis eksplisit; bila kosong, diturunkan dari
+        // SUPABASE_URL. Kalau keduanya kosong, verifikasi ES256 dinonaktifkan
+        // dan hanya HS256 (token milik backend sendiri) yang diterima.
+        let supabase_jwks_url = env::var("SUPABASE_JWKS_URL")
+            .ok()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.replace("\"", ""))
+            .or_else(|| {
+                env::var("SUPABASE_URL")
+                    .ok()
+                    .filter(|s| !s.is_empty())
+                    .map(|s| s.replace("\"", "").trim_end_matches('/').to_string())
+                    .map(|base| format!("{}/auth/v1/.well-known/jwks.json", base))
+            });
+
         let database_url = env::var("DATABASE_URL")
             .ok()
             .filter(|s| !s.is_empty())
@@ -90,6 +107,7 @@ impl AppConfig {
             mqtt_username,
             mqtt_password,
             supabase_jwt_secret,
+            supabase_jwks_url,
             database_url,
         }
     }

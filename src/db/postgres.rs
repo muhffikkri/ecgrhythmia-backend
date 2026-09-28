@@ -39,7 +39,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     }
 
     let queries = [
-        "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT, role TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP, profile_photo TEXT, status TEXT DEFAULT 'Offline')",
+        "CREATE TABLE IF NOT EXISTS accounts (id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, password_hash TEXT, role TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP, profile_photo TEXT, status TEXT DEFAULT 'Offline', auth_id TEXT)",
         "CREATE TABLE IF NOT EXISTS doctors (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS patients (id TEXT PRIMARY KEY, account_id TEXT REFERENCES accounts(id) ON DELETE CASCADE, first_name TEXT NOT NULL, last_name TEXT NOT NULL, date_of_birth DATE, age INTEGER DEFAULT 0, gender TEXT, primary_doctor_id TEXT REFERENCES doctors(id) ON DELETE SET NULL, device_id TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
         "CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL UNIQUE, mqtt_broker TEXT, mqtt_port INTEGER, mqtt_topic TEXT, mqtt_username TEXT, mqtt_password TEXT, created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP)",
@@ -57,6 +57,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     // (CREATE TABLE IF NOT EXISTS tidak akan mengubah tabel eksisting)
     let alter_queries = [
         "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS password_hash TEXT",
+        "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS auth_id TEXT",
         "ALTER TABLE accounts ALTER COLUMN created_at SET NOT NULL",
         "ALTER TABLE patients ADD COLUMN IF NOT EXISTS date_of_birth DATE",
         "ALTER TABLE patients ADD COLUMN IF NOT EXISTS age INTEGER DEFAULT 0",

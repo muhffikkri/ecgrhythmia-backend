@@ -53,6 +53,7 @@ async fn setup_test_state() -> Option<(
         pacer_tx,
         db_tx,
         jwt_secret: "test_jwt_secret_key_extremely_long_and_secure".to_string(),
+        jwks: ecg_backend::api::jwks::Jwks::new(None),
         api_url: "http://127.0.0.1:8081".to_string(),
     };
 

@@ -100,6 +100,9 @@ async fn main() {
     }
 
     // 8. Setup Router Axum untuk REST API + WebSocket
+    let jwks = api::jwks::Jwks::new(config.supabase_jwks_url.clone());
+    jwks.warmup().await;
+
     let app_state = api::routes::AppState {
         pool: pool.clone(),
         mqtt_clients: mqtt_clients.clone(),
@@ -107,6 +110,7 @@ async fn main() {
         pacer_tx: pacer_tx.clone(),
         db_tx: db_tx.clone(),
         jwt_secret: config.supabase_jwt_secret.clone(),
+        jwks,
         api_url: format!("http://{}:{}", config.host_ip, config.rest_port),
     };
 
