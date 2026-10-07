@@ -23,8 +23,10 @@ jobs:
           BACKEND_DIR: /var/www/ecgrhythmia-backend
         run: |
           set -e
+          # StrictHostKeyChecking=no: tanpa interaksi di runner (host key tak dikenal di run pertama).
+          export SSH_OPTS="-o StrictHostKeyChecking=no"
           # --- backend: fetch + build di VPS, pakai cache offline .sqlx/ (tanpa DB) ---
-          ssh "$VPS_USER@$VPS_HOST" "set -e
+          ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "set -e
             cd '$BACKEND_DIR'
             git fetch origin main
             git checkout main
