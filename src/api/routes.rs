@@ -2602,6 +2602,7 @@ async fn add_patient_handler(
     Json(req): Json<AddPatientRequest>,
 ) -> impl IntoResponse {
     let new_id = crate::db::postgres::generate_custom_id(&state.pool, "patients", "pat").await;
+    let new_account_id = crate::db::postgres::generate_custom_id(&state.pool, "accounts", "acc").await;
     let gender = if req.gender.is_empty() {
         "U".to_string()
     } else {
@@ -2611,18 +2612,23 @@ async fn add_patient_handler(
         .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
 
     let res = sqlx::query!(
-        "INSERT INTO patients (id, first_name, last_name, date_of_birth, gender, device_id) VALUES ($1, $2, $3, $4, $5, $6)",
-        new_id, req.first_name, req.last_name, date_of_birth, gender, req.device_id
+        "INSERT INTO patients (id, first_name, last_name, date_of_birth, gender, device_id, account_id) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        new_id, req.first_name, req.last_name, date_of_birth, gender, req.device_id, new_account_id
     ).execute(&state.pool).await;
 
-    match res {
-        Ok(_) => (
+    let account_res = sqlx::query!(
+        "INSERT INTO accounts (id, role, status) VALUES ($1, 'pasien', 'Offline')",
+        new_account_id
+    ).execute(&state.pool).await;
+
+    match (res, account_res) {
+        (Ok(_), Ok(_)) => (
             StatusCode::OK,
             Json(
-                serde_json::json!({"success": true, "message": "Pasien berhasil ditambahkan", "id": new_id}),
+                serde_json::json!({"success": true, "message": "Pasien berhasil ditambahkan", "id": new_id, "account_id": new_account_id}),
             ),
         ),
-        Err(e) => (
+        (Err(e), _) | (_, Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"success": false, "message": e.to_string()})),
         ),
