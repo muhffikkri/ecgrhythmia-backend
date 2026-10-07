@@ -74,37 +74,38 @@ async fn main() {
             .fetch_all(&pool).await
         {
             for device in devices {
-                if let (Some(broker), Some(port), Some(topic), Some(username), Some(password)) = (
-                    device.mqtt_broker, device.mqtt_port, device.mqtt_topic, device.mqtt_username, device.mqtt_password
-                ) {
-                    let db_tx_clone = db_tx.clone();
-                    let port_u16 = port as u16;
+                let broker = device.mqtt_broker.as_ref().unwrap().as_str();
+                let port = device.mqtt_port.unwrap() as u16;
+                let topic = device.mqtt_topic.as_ref().map(|s| s.as_str()).unwrap_or("");
+                let username = device.mqtt_username.as_ref().map(|s| s.as_str()).unwrap_or("");
+                let password = device.mqtt_password.as_ref().map(|s| s.as_str()).unwrap_or("");
 
-                    let client = network::mqtt_listener::start_mqtt_listener(
-                        &broker,
-                        port_u16,
-                        &topic,
-                        &username,
-                        &password,
-                        move |payload_str| {
-                            match serde_json::from_str::<models::device::DevicePayload>(&payload_str) {
-                                Ok(device_payload) => {
-                                    let _ = db_tx_clone.send(device_payload);
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "Gagal mem-parsing payload EKG dari perangkat: {}. Payload: {}",
-                                        e,
-                                        payload_str
-                                    );
-                                }
+                let db_tx_clone = db_tx.clone();
+
+                let client = network::mqtt_listener::start_mqtt_listener(
+                    broker,
+                    port,
+                    topic,
+                    username,
+                    password,
+                    move |payload_str| {
+                        match serde_json::from_str::<models::device::DevicePayload>(&payload_str) {
+                            Ok(device_payload) => {
+                                let _ = db_tx_clone.send(device_payload);
+                            }
+                            Err(e) => {
+                                tracing::error!(
+                                    "Gagal mem-parsing payload EKG dari perangkat: {}. Payload: {}",
+                                    e,
+                                    payload_str
+                                );
                             }
                         }
-                    );
+                    }
+                );
 
-                    let mut clients_map = mqtt_clients.write().await;
-                    clients_map.insert(device.id, client);
-                }
+                let mut clients_map = mqtt_clients.write().await;
+                clients_map.insert(device.id, client);
             }
         }
     }

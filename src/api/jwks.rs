@@ -47,15 +47,13 @@ pub struct Jwks {
     http: reqwest::Client,
 }
 
-const REFRESH_INTERVAL: Duration = Duration::from_secs(60 * 60);
-
 /// Jeda minimum antar permintaan refresh yang dipicu `kid` tak dikenal.
 ///
 /// `kid` tak dikenal bisa berarti dua hal: rotasi kunci Supabase (kunci baru
 /// sudah terbit tapi cache masih menyimpan yang lama) atau penyerang yang
 /// mengirim token sampah. Tanpa jeda, penyerang bisa memaksa backend
 /// memanggil JWKS pada setiap request. Jeda 60 detik membuat rotasi kunci
-/// pulih dalam ~1 menit, bukan menunggu `REFRESH_INTERVAL` penuh.
+/// pulih dalam ~1 menit, bukan menunggu refresh interval penuh.
 const MISS_REFRESH_THROTTLE: Duration = Duration::from_secs(60);
 
 impl Jwks {

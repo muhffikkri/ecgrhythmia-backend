@@ -366,27 +366,6 @@ pub struct AuthResponse {
     pub token: Option<String>,
 }
 
-#[derive(Deserialize)]
-pub struct RegisterProfileRequest {
-    pub role: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub email: String,
-    pub age: Option<i32>,
-    pub gender: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct AdminRegisterRequest {
-    pub email: String,
-    pub password: String,
-    pub role: String,
-    pub first_name: String,
-    pub last_name: String,
-    pub age: Option<i32>,
-    pub gender: Option<String>,
-}
-
 #[derive(Deserialize, Serialize)]
 pub struct RegisterRequest {
     pub role: String,
@@ -612,11 +591,13 @@ async fn register_handler(
             .unwrap_or_else(|| "2000-01-01".to_string());
         let dob = chrono::NaiveDate::parse_from_str(&dob_str, "%Y-%m-%d")
             .unwrap_or_else(|_| chrono::NaiveDate::from_ymd_opt(2000, 1, 1).unwrap());
-        let gender = req.gender.unwrap_or_else(|| "U".to_string());
-        let _ = sqlx::query!("INSERT INTO patients (id, account_id, first_name, last_name, date_of_birth, gender) VALUES ($1, $2, $3, $4, $5, $6)", patient_id, account_id, req.first_name, req.last_name, dob, gender).execute(&state.pool).await;
+        let gender = req.gender.clone().unwrap_or_else(|| "U".to_string());
+        if let Err(e) = sqlx::query!("INSERT INTO patients (id, account_id, first_name, last_name, date_of_birth, gender) VALUES ($1, $2, $3, $4, $5, $6)", patient_id, account_id, req.first_name, req.last_name, dob, gender).execute(&state.pool).await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": format!("Gagal membuat profil pasien: {e}")})));
+        }
     } else if req.role == "dokter" {
         let doctor_id = Uuid::new_v4().to_string();
-        let _ = sqlx::query!(
+        if let Err(e) = sqlx::query!(
             "INSERT INTO doctors (id, account_id, first_name, last_name) VALUES ($1, $2, $3, $4)",
             doctor_id,
             account_id,
@@ -624,7 +605,9 @@ async fn register_handler(
             req.last_name
         )
         .execute(&state.pool)
-        .await;
+        .await {
+            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": format!("Gagal membuat profil dokter: {e}")})));
+        }
     }
 
     let token = create_jwt(&account_id, &req.role, &state.jwt_secret);
@@ -874,116 +857,8 @@ async fn refresh_token_handler(
     )
 }
 
-async fn register_profile_handler(
-    claims: UserClaims,
-    State(state): State<AppState>,
-    Json(req): Json<RegisterProfileRequest>,
-) -> impl IntoResponse {
-    let account_id = claims.0.sub;
 
-    if let Err(e) = sqlx::query!("INSERT INTO accounts (id, email, role, status) VALUES ($1, $2, $3, 'Online') ON CONFLICT (id) DO NOTHING", account_id, req.email, req.role).execute(&state.pool).await {
-        return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": e.to_string()})));
-    }
-
-    if req.role == "dokter" {
-        let _ = sqlx::query!("INSERT INTO doctors (id, account_id, first_name, last_name) VALUES ($1, $2, $3, $4) ON CONFLICT (id) DO NOTHING", account_id, account_id, req.first_name, req.last_name).execute(&state.pool).await;
-    } else if req.role == "pasien" {
-        let age = req.age.unwrap_or(0);
-        let gender = req.gender.unwrap_or_default();
-        let _ = sqlx::query!("INSERT INTO patients (id, account_id, first_name, last_name, age, gender) VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT (id) DO NOTHING", account_id, account_id, req.first_name, req.last_name, age, gender).execute(&state.pool).await;
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "success": true,
-            "message": "Profil berhasil disimpan"
-        })),
-    )
-}
-
-async fn admin_register_handler(
-    _claims: AdminClaims,
-    State(state): State<AppState>,
-    Json(req): Json<AdminRegisterRequest>,
-) -> impl IntoResponse {
-    let new_user_id = Uuid::new_v4();
-    let new_user_id_str = new_user_id.to_string();
-
-    let hashed_password = match hash(&req.password, DEFAULT_COST) {
-        Ok(h) => h,
-        Err(e) => {
-            return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(
-                    serde_json::json!({"success": false, "message": format!("Gagal memproses kata sandi: {}", e)}),
-                ),
-            )
-        }
-    };
-
-    let raw_user_meta = serde_json::json!({"role": req.role});
-
-    let insert_auth_res = sqlx::query(
-        "INSERT INTO auth.users (id, instance_id, aud, role, email, encrypted_password, email_confirmed_at, raw_user_meta_data, created_at, updated_at) 
-         VALUES ($1, '00000000-0000-0000-0000-000000000000', 'authenticated', 'authenticated', $2, $3, NOW(), $4, NOW(), NOW())"
-    )
-    .bind(new_user_id)
-    .bind(&req.email)
-    .bind(&hashed_password)
-    .bind(&raw_user_meta)
-    .execute(&state.pool).await;
-
-    if let Err(e) = insert_auth_res {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                serde_json::json!({"success": false, "message": format!("Gagal mendaftarkan akun: {}", e)}),
-            ),
-        );
-    }
-
-    if let Err(e) = sqlx::query!(
-        "INSERT INTO accounts (id, email, role, status) VALUES ($1, $2, $3, 'Offline')",
-        new_user_id_str,
-        req.email,
-        req.role
-    )
-    .execute(&state.pool)
-    .await
-    {
-        return (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(
-                serde_json::json!({"success": false, "message": format!("Gagal mendaftarkan profil: {}", e)}),
-            ),
-        );
-    }
-
-    if req.role == "dokter" {
-        let _ = sqlx::query!(
-            "INSERT INTO doctors (id, account_id, first_name, last_name) VALUES ($1, $2, $3, $4)",
-            new_user_id_str,
-            new_user_id_str,
-            req.first_name,
-            req.last_name
-        )
-        .execute(&state.pool)
-        .await;
-    } else if req.role == "pasien" {
-        let age = req.age.unwrap_or(0);
-        let gender = req.gender.unwrap_or_default();
-        let _ = sqlx::query!("INSERT INTO patients (id, account_id, first_name, last_name, age, gender) VALUES ($1, $2, $3, $4, $5, $6)", new_user_id_str, new_user_id_str, req.first_name, req.last_name, age, gender).execute(&state.pool).await;
-    }
-
-    (
-        StatusCode::OK,
-        Json(serde_json::json!({
-            "success": true,
-            "message": "Pengguna berhasil didaftarkan"
-        })),
-    )
-}
+// ponytail: register_profile_handler deleted (dead code, never routed)
 
 #[derive(Serialize)]
 pub struct PaginationInfo {
@@ -1159,62 +1034,7 @@ async fn impersonate_handler(
     }
 }
 
-async fn doctor_impersonate_handler(
-    claims: UserClaims,
-    State(state): State<AppState>,
-    AxumPath(target_id): AxumPath<String>,
-) -> impl IntoResponse {
-    if claims.0.role != "dokter" {
-        return (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"success": false, "message": "Hanya dokter yang dapat melakukan impersonasi"}),
-            ),
-        );
-    }
-
-    let doctor_account_id = claims.0.sub;
-    let doc_res = sqlx::query!(
-        "SELECT id FROM doctors WHERE account_id = $1",
-        doctor_account_id
-    )
-    .fetch_one(&state.pool)
-    .await;
-    let doc_id = match doc_res {
-        Ok(rec) => rec.id,
-        Err(_) => {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({"success": false, "message": "Dokter tidak valid"})),
-            )
-        }
-    };
-
-    let target_patient = sqlx::query!(
-        "SELECT id FROM patients WHERE account_id = $1 AND primary_doctor_id = $2",
-        target_id,
-        doc_id
-    )
-    .fetch_optional(&state.pool)
-    .await;
-
-    match target_patient {
-        Ok(Some(_)) => (
-            StatusCode::OK,
-            Json(serde_json::json!({
-                "success": true,
-                "user_id": target_id,
-                "role": "pasien"
-            })),
-        ),
-        _ => (
-            StatusCode::FORBIDDEN,
-            Json(
-                serde_json::json!({"success": false, "message": "Pasien bukan milik dokter ini atau tidak ditemukan"}),
-            ),
-        ),
-    }
-}
+// ponytail: doctor_impersonate_handler deleted (dead code, never routed)
 
 async fn get_patients_handler(
     State(state): State<AppState>,
@@ -1836,38 +1656,38 @@ async fn get_admin_users_filtered(
     let users = match role_filter.as_deref() {
         Some("pasien") => {
             sqlx::query!(
-                "SELECT p.id AS \"id!\", p.first_name || ' ' || p.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo 
+                "SELECT p.id AS \"id!\", p.account_id AS \"account_id!\", p.first_name || ' ' || p.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo 
                  FROM patients p JOIN accounts a ON p.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2", limit as i64, offset as i64
             ).fetch_all(pool).await.unwrap_or_default()
             .into_iter().map(|row| AdminUser {
-                id: row.id.clone(), account_id: row.id, name: row.name, role: row.role, status: row.status,
+                id: row.id.clone(), account_id: row.account_id, name: row.name, role: row.role, status: row.status,
                 registered_at: Some(row.created_at.to_rfc3339()), connected_doctor_id: row.primary_doctor_id,
                 connected_device_id: row.device_id, profile_photo: row.profile_photo,
             }).collect()
         },
         Some("dokter") => {
             sqlx::query!(
-                "SELECT d.id AS \"id!\", d.first_name || ' ' || d.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, a.profile_photo 
+                "SELECT d.id AS \"id!\", d.account_id AS \"account_id!\", d.first_name || ' ' || d.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, a.profile_photo 
                  FROM doctors d JOIN accounts a ON d.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2", limit as i64, offset as i64
             ).fetch_all(pool).await.unwrap_or_default()
             .into_iter().map(|row| AdminUser {
-                id: row.id.clone(), account_id: row.id, name: row.name, role: row.role, status: row.status,
+                id: row.id.clone(), account_id: row.account_id, name: row.name, role: row.role, status: row.status,
                 registered_at: Some(row.created_at.to_rfc3339()), connected_doctor_id: None,
                 connected_device_id: None, profile_photo: row.profile_photo,
             }).collect()
         },
         _ => {
             sqlx::query!(
-                "SELECT id AS \"id!\", name AS \"name!\", role AS \"role!\", status AS \"status!\", registered_at, connected_doctor_id, connected_device_id, profile_photo FROM (
-                    SELECT p.id AS id, p.first_name || ' ' || p.last_name AS name, a.role AS role, COALESCE(a.status, 'Offline') AS status, a.created_at AS registered_at, p.primary_doctor_id AS connected_doctor_id, p.device_id AS connected_device_id, a.profile_photo AS profile_photo
+                "SELECT id AS \"id!\", account_id AS \"account_id!\", name AS \"name!\", role AS \"role!\", status AS \"status!\", registered_at, connected_doctor_id, connected_device_id, profile_photo FROM (
+                    SELECT p.id AS id, p.account_id AS account_id, p.first_name || ' ' || p.last_name AS name, a.role AS role, COALESCE(a.status, 'Offline') AS status, a.created_at AS registered_at, p.primary_doctor_id AS connected_doctor_id, p.device_id AS connected_device_id, a.profile_photo AS profile_photo
                     FROM patients p JOIN accounts a ON p.account_id = a.id
                     UNION ALL
-                    SELECT d.id, d.first_name || ' ' || d.last_name, a.role, COALESCE(a.status, 'Offline'), a.created_at, NULL, NULL, a.profile_photo
+                    SELECT d.id, d.account_id, d.first_name || ' ' || d.last_name, a.role, COALESCE(a.status, 'Offline'), a.created_at, NULL, NULL, a.profile_photo
                     FROM doctors d JOIN accounts a ON d.account_id = a.id
                 ) AS allusers ORDER BY registered_at DESC LIMIT $1 OFFSET $2", limit as i64, offset as i64
             ).fetch_all(pool).await.unwrap_or_default()
             .into_iter().map(|row| AdminUser {
-                id: row.id.clone(), account_id: row.id, name: row.name, role: row.role, status: row.status,
+                id: row.id.clone(), account_id: row.account_id, name: row.name, role: row.role, status: row.status,
                 registered_at: row.registered_at.map(|d| d.to_rfc3339()), connected_doctor_id: row.connected_doctor_id,
                 connected_device_id: row.connected_device_id, profile_photo: row.profile_photo,
             }).collect()
@@ -2120,17 +1940,17 @@ fn parse_csv_samples(csv_content: &str) -> Result<Vec<Vec<f64>>, Box<dyn std::er
     Ok(samples)
 }
 
-#[allow(dead_code)]
-#[allow(non_snake_case)]
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct UploadMetadataCal {
     calibration_source: Option<String>,
+    #[allow(non_snake_case)]
     expected_mV: Option<f64>,
     method: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct UploadMetadataSourceMeta {
     device_id: Option<String>,
     session_id: Option<String>,
@@ -2142,8 +1962,8 @@ struct UploadMetadataSourceMeta {
     duration_seconds: Option<f64>,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize)]
+#[allow(dead_code)]
 struct UploadMetadata {
     calibration: Option<UploadMetadataCal>,
     created_at_utc: Option<String>,
@@ -2154,7 +1974,6 @@ struct UploadMetadata {
     unit: Option<String>,
 }
 
-#[allow(dead_code)]
 #[derive(Deserialize, Clone)]
 struct UploadPredictionMetadata {
     prediction: Option<String>,
