@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT p.id AS \"id!\", p.first_name || ' ' || p.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo \n                 FROM patients p JOIN accounts a ON p.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2",
+  "query": "SELECT p.id AS \"id!\", p.account_id AS \"account_id!\", p.first_name || ' ' || p.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, p.primary_doctor_id, p.device_id, a.profile_photo \n                 FROM patients p JOIN accounts a ON p.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2",
   "describe": {
     "columns": [
       {
@@ -10,36 +10,41 @@
       },
       {
         "ordinal": 1,
-        "name": "name!",
+        "name": "account_id!",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "role!",
+        "name": "name!",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "status!",
+        "name": "role!",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "primary_doctor_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 6,
+        "ordinal": 7,
         "name": "device_id",
         "type_info": "Text"
       },
       {
-        "ordinal": 7,
+        "ordinal": 8,
         "name": "profile_photo",
         "type_info": "Text"
       }
@@ -52,6 +57,7 @@
     },
     "nullable": [
       false,
+      true,
       null,
       false,
       null,
@@ -61,5 +67,5 @@
       true
     ]
   },
-  "hash": "de86decea972635e4bbfe28234bb6476b8618bc3f0c98253ddc5675efda3dd18"
+  "hash": "739ba5bd21b48f101e030605e04059ef5e8a044a1abbd9c74c571d71904bda0b"
 }

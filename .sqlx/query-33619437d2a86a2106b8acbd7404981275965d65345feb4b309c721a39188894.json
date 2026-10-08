@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO accounts (id, role, status) VALUES ($1, 'pasien', 'Offline')",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "33619437d2a86a2106b8acbd7404981275965d65345feb4b309c721a39188894"
+}

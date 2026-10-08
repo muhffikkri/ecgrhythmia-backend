@@ -1,6 +1,6 @@
 {
   "db_name": "PostgreSQL",
-  "query": "SELECT d.id AS \"id!\", d.first_name || ' ' || d.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, a.profile_photo \n                 FROM doctors d JOIN accounts a ON d.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2",
+  "query": "SELECT d.id AS \"id!\", d.account_id AS \"account_id!\", d.first_name || ' ' || d.last_name AS \"name!\", a.role AS \"role!\", COALESCE(a.status, 'Offline') AS \"status!\", a.created_at, a.profile_photo \n                 FROM doctors d JOIN accounts a ON d.account_id = a.id ORDER BY a.created_at DESC LIMIT $1 OFFSET $2",
   "describe": {
     "columns": [
       {
@@ -10,26 +10,31 @@
       },
       {
         "ordinal": 1,
-        "name": "name!",
+        "name": "account_id!",
         "type_info": "Text"
       },
       {
         "ordinal": 2,
-        "name": "role!",
+        "name": "name!",
         "type_info": "Text"
       },
       {
         "ordinal": 3,
-        "name": "status!",
+        "name": "role!",
         "type_info": "Text"
       },
       {
         "ordinal": 4,
+        "name": "status!",
+        "type_info": "Text"
+      },
+      {
+        "ordinal": 5,
         "name": "created_at",
         "type_info": "Timestamptz"
       },
       {
-        "ordinal": 5,
+        "ordinal": 6,
         "name": "profile_photo",
         "type_info": "Text"
       }
@@ -42,6 +47,7 @@
     },
     "nullable": [
       false,
+      true,
       null,
       false,
       null,
@@ -49,5 +55,5 @@
       true
     ]
   },
-  "hash": "ceeef26ca65fa495ca4632c2a5148f2629d456d2949ff8c5953d546e9ca87632"
+  "hash": "7bd4a379e74dfb52ee2ffcbfd01944556dff8163e9fe89bcbcd19973942affd4"
 }
