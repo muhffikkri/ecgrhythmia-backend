@@ -1,6 +1,6 @@
 [package]
 name = "ecg-backend"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Backend WebSocket Medis untuk Streaming Data EKG Real-Time"
 default-run = "ecg-backend"

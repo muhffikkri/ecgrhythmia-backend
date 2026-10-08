@@ -1,6 +1,6 @@
 # ECG Rhythmia - Sinkronisasi & Integrasi Frontend
 
-**Versi rilis saat ini: `v1.1.0`**
+**Versi rilis saat ini: `v1.2.0`**
 
 Dokumentasi ini berfokus pada integrasi sisi **Frontend (React)** untuk memvisualisasikan data Elektrokardiogram (EKG) secara _real-time_, serta bagaimana frontend melakukan sinkronisasi dengan backend.
 
@@ -346,6 +346,38 @@ Backend didesain agar dapat tersinkronisasi mulus dengan aplikasi React (yang te
 - `npm run build`: Melakukan proses kompilasi TypeScript dan mem-_build_ aplikasi agar siap di-_deploy_ ke tahap produksi (berada di folder `dist/`).
 - `npm run lint`: Memeriksa potensi kesalahan/standar kode dengan cepat (memanfaatkan `oxlint`).
 - `npm run preview`: Membuka server lokal (_preview_) untuk melihat dan menguji _build_ versi produksi yang telah dikompilasi sebelumnya.
+
+---
+
+## 🤖 CI & Auto-Deploy (GitHub Actions)
+
+Dua workflow di `.github/workflows/`:
+
+| Workflow | File | Pemicu |
+|---|---|---|
+| Lint + test | `ci.yml` | Push/PR ke `main` |
+| Deploy VPS | `deploy.yml` | Push ke `main` (setelah CI hijau) |
+
+**`ci.yml`** — `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`,
+`cargo test --all-targets`. Semua pakai `SQLX_OFFLINE=true` + cache `.sqlx/`
+yang di-commit; tak butuh koneksi database sama sekali di runner.
+
+**`deploy.yml`** — SSH ke VPS (`VPS_SSH_KEY`), `git pull` di
+`/var/www/ecgrhythmia-backend`, `cargo build --release` in-place (cache
+`.sqlx/` terbaru + `.env` VPS untuk query yang belum ter-cache),
+`systemctl restart ecg-backend`, health-check
+`https://api.ecgrhythmia.cloud/api/health`.
+
+**Secrets GitHub** (Settings → Secrets and variables → Actions, repo ini):
+
+| Nama | Isi |
+|---|---|
+| `VPS_SSH_KEY` | Private key ed25519 (pub-nya di `~/.ssh/authorized_keys` VPS). Arah: GitHub runner → VPS. |
+| `VPS_HOST` | `202.155.16.129` atau `api.ecgrhythmia.cloud` |
+| `VPS_USER` | user SSH di VPS (mis. `root`) |
+
+Catatan: runner juga `git pull` dari VPS via git key Opsi A (key user-level
+VPS→GitHub, terpisah dari `VPS_SSH_KEY`). Rahasia tak pernah tercatat di log.
 
 ---
 

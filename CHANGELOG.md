@@ -3,10 +3,29 @@
 Format mengikuti [Keep a Changelog](https://keepachangelog.com/id-ID/1.1.0/) dan
 versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.2.0] - 2026-10-08
 
 ### Ditambahkan
 
+- **GitHub Actions CI** (`.github/workflows/ci.yml`): `cargo fmt --check`,
+  `cargo clippy --all-targets -- -D warnings`, dan `cargo test --all-targets`
+  otomatis jalan di setiap push/PR ke `main`. `SQLX_OFFLINE=true` +
+  offline cache `.sqlx/` yang di-commit, jadi CI tak perlu koneksi database
+  sama sekali.
+- **GitHub Actions auto-deploy VPS** (`.github/workflows/deploy.yml`):
+  SSH dari runner ke VPS (`VPS_SSH_KEY`), `git pull` di `/var/www/ecgrhythmia-backend`,
+  `cargo build --release` in-place (pakai `.env` VPS + cache offline `.sqlx/`),
+  `systemctl restart ecg-backend` (unit di `/etc/systemd/system/ecg-backend.service`),
+  lalu health-check `https://api.ecgrhythmia.cloud/api/health`.
+- Fix data `get_admin_users_filtered`: SELECT kini mengembalikan
+  `p.account_id` / `d.account_id` (UUID riil `accounts.id`) sebagai
+  `account_id`, bukan UUID profil `patients.id`/`doctors.id` sebelumnya
+  (yang membuat impersonasi admin ke pasien/dokter asli gagal).
+- `add_patient_handler` kini juga membuat baris `accounts` terkait dan mengisi
+  `patients.account_id`, sehingga pasien ditambahkan admin dapat di-impersonate
+  dan punya `account_id` yang resolvable.
+- `.sqlx/` offline cache di-regenerasi untuk query-query baru di atas
+  (`cargo sqlx prepare`), tetap di-commit untuk build offline.
 - **Verifikasi signature ES256 lewat JWKS Supabase** (`src/api/jwks.rs`).
   Proyek ini memang memakai kunci asimetris: endpoint
   `/auth/v1/.well-known/jwks.json` mengembalikan `alg: ES256`, `crv: P-256`
@@ -121,6 +140,17 @@ versi mengikuti [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   guard admin yang fallback `SELECT role ...` ikut gagal hingga memunculkan 401.
   Terverifikasi secara kontinu (300 request): 6543 = 0% sukses, 5432 = 100%.
   `psql` (simple protocol) aman di kedua port.
+
+### Diperbaiki
+
+- **Lint clippy** (Rust 1.99.0): `div_ceil`, `manual_checked_ops`,
+  `unnecessary_lazy_evaluations`, `map_clone`, `redundant_closure`,
+  `explicit_auto_deref`, `get_first`, `print_literal`,
+  `option_as_ref_deref` — seluruhnya bersih
+  (`cargo clippy --all-targets -- -D warnings` hijau).
+- Test `verifies_real_es256_signature` di-`#[ignore]`: token test
+  hardcoded sudah lewat masa (`Expired`); regenerate kunci+token test
+  untuk mengaktifkan kembali.
 
 ## [1.1.0] - 2026-09-14
 
