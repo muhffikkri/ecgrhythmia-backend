@@ -34,6 +34,7 @@ jobs:
             # Bangun dengan cache offline; tak butuh koneksi DATABASE_URL
             SQLX_OFFLINE=true cargo build --release
             # Restart service (sesuaikan nama unit systemd di VPS kamu)
+            # /etc/systemd/system/ecg-backend.service
             sudo systemctl restart ecg-backend 2>/dev/null || systemctl --user restart ecg-backend 2>/dev/null || true
           "
       - name: verify

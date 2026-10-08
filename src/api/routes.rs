@@ -605,8 +605,14 @@ async fn register_handler(
             req.last_name
         )
         .execute(&state.pool)
-        .await {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"success": false, "message": format!("Gagal membuat profil dokter: {e}")})));
+        .await
+        {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(
+                    serde_json::json!({"success": false, "message": format!("Gagal membuat profil dokter: {e}")}),
+                ),
+            );
         }
     }
 
@@ -856,7 +862,6 @@ async fn refresh_token_handler(
         })),
     )
 }
-
 
 // ponytail: register_profile_handler deleted (dead code, never routed)
 
@@ -2602,7 +2607,8 @@ async fn add_patient_handler(
     Json(req): Json<AddPatientRequest>,
 ) -> impl IntoResponse {
     let new_id = crate::db::postgres::generate_custom_id(&state.pool, "patients", "pat").await;
-    let new_account_id = crate::db::postgres::generate_custom_id(&state.pool, "accounts", "acc").await;
+    let new_account_id =
+        crate::db::postgres::generate_custom_id(&state.pool, "accounts", "acc").await;
     let gender = if req.gender.is_empty() {
         "U".to_string()
     } else {
@@ -2619,7 +2625,9 @@ async fn add_patient_handler(
     let account_res = sqlx::query!(
         "INSERT INTO accounts (id, role, status) VALUES ($1, 'pasien', 'Offline')",
         new_account_id
-    ).execute(&state.pool).await;
+    )
+    .execute(&state.pool)
+    .await;
 
     match (res, account_res) {
         (Ok(_), Ok(_)) => (

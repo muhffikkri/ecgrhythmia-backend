@@ -50,7 +50,10 @@ pub async fn create_pool(database_url: &str) -> PgPool {
         {
             Ok(Ok(pool)) => {
                 if attempt > 1 {
-                    info!("Berhasil terhubung ke PostgreSQL setelah {} percobaan.", attempt);
+                    info!(
+                        "Berhasil terhubung ke PostgreSQL setelah {} percobaan.",
+                        attempt
+                    );
                 }
                 return pool;
             }
