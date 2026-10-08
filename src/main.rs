@@ -76,9 +76,9 @@ async fn main() {
             for device in devices {
                 let broker = device.mqtt_broker.as_ref().unwrap().as_str();
                 let port = device.mqtt_port.unwrap() as u16;
-                let topic = device.mqtt_topic.as_ref().map(|s| s.as_str()).unwrap_or("");
-                let username = device.mqtt_username.as_ref().map(|s| s.as_str()).unwrap_or("");
-                let password = device.mqtt_password.as_ref().map(|s| s.as_str()).unwrap_or("");
+                let topic = device.mqtt_topic.as_deref().unwrap_or("");
+                let username = device.mqtt_username.as_deref().unwrap_or("");
+                let password = device.mqtt_password.as_deref().unwrap_or("");
 
                 let db_tx_clone = db_tx.clone();
 
