@@ -31,8 +31,10 @@ jobs:
             git fetch origin main
             git checkout main
             git pull origin main
-            # Bangun dengan cache offline; tak butuh koneksi DATABASE_URL
-            SQLX_OFFLINE=true cargo build --release
+            # .sqlx/ cache offline sudah up-to-date (di-generate manual via VPS/DB langsung
+            # saat ada query baru). Build di VPS pakai .env lokal (DATABASE_URL + SSL),
+            # tanpa SQLX_OFFLINE -> sqlx fallback ke DB live untuk query tak-ter-cache.
+            cargo build --release
             # Restart service (sesuaikan nama unit systemd di VPS kamu)
             # /etc/systemd/system/ecg-backend.service
             sudo systemctl restart ecg-backend 2>/dev/null || systemctl --user restart ecg-backend 2>/dev/null || true
