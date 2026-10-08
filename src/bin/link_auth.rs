@@ -60,8 +60,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut unlinked = 0usize;
 
     println!(
-        "{:<38} {:<10} {:<38} {}",
-        "EMAIL", "ROLE", "AUTH_ID", "ACCOUNT_ID"
+        "{:<38} {:<10} {:<38} ACCOUNT_ID",
+        "EMAIL", "ROLE", "AUTH_ID"
     );
     for row in &rows {
         match row.get::<Option<String>, _>("auth_id") {
