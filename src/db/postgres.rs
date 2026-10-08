@@ -189,7 +189,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     ];
 
     for q in queries.iter() {
-        if let Err(e) = sqlx::query(*q).execute(pool).await {
+        if let Err(e) = sqlx::query(q).execute(pool).await {
             warn_skip(q, &e);
         }
     }
@@ -213,7 +213,7 @@ pub async fn run_migrations(pool: &PgPool) -> Result<(), sqlx::Error> {
     ];
 
     for q in alter_queries.iter() {
-        if let Err(e) = sqlx::query(*q).execute(pool).await {
+        if let Err(e) = sqlx::query(q).execute(pool).await {
             warn_skip(q, &e);
         }
     }

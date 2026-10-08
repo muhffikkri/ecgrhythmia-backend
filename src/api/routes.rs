@@ -974,11 +974,7 @@ async fn get_admin_users_handler(
         .and_then(|l| l.parse().ok())
         .unwrap_or(100);
     let (users, total) = get_admin_users_filtered(&state.pool, role_filter, page, limit).await;
-    let total_pages = if limit > 0 {
-        (total + limit - 1) / limit
-    } else {
-        1
-    };
+    let total_pages = if limit > 0 { total.div_ceil(limit) } else { 1 };
     Json(serde_json::json!({
         "data": users,
         "pagination": {
@@ -1323,7 +1319,7 @@ async fn device_command_handler(
     Json(cmd): Json<DeviceCommand>,
 ) -> impl IntoResponse {
     let command = cmd.command.to_uppercase();
-    let patient_id = cmd.patient_id.clone().or_else(|| {
+    let patient_id = cmd.patient_id.clone().or({
         // resolve patient from device assignment requires async; handle below
         None
     });
@@ -1344,7 +1340,7 @@ async fn device_command_handler(
             let initial_file_path = format!("records/{}.jsonl", new_id);
             let now = chrono::Utc::now();
 
-            let resolved_patient = cmd.patient_id.clone().or_else(|| {
+            let resolved_patient = cmd.patient_id.clone().or({
                 // Best-effort: find the patient currently assigned to this device
                 None
             });
@@ -1949,8 +1945,7 @@ fn parse_csv_samples(csv_content: &str) -> Result<Vec<Vec<f64>>, Box<dyn std::er
 #[allow(dead_code)]
 struct UploadMetadataCal {
     calibration_source: Option<String>,
-    #[allow(non_snake_case)]
-    expected_mV: Option<f64>,
+    expected_m_v: Option<f64>,
     method: Option<String>,
 }
 
@@ -2142,7 +2137,7 @@ async fn upload_session_handler(
             .source_metadata
             .as_ref()
             .and_then(|m| m.device_id.as_ref())
-            .map(|s| s.clone())
+            .cloned()
             .unwrap_or_else(|| "device01".to_string());
 
         if resolved_session_id.is_empty() {
@@ -2273,7 +2268,7 @@ async fn upload_session_handler(
                 warnings: prediction_obj
                     .as_ref()
                     .and_then(|p| p.input_warnings.clone())
-                    .unwrap_or_else(|| vec![]),
+                    .unwrap_or_default(),
             },
             ecg: crate::models::device::DeviceEcg {
                 format: "samples_by_time".to_string(),

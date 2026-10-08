@@ -35,7 +35,7 @@ pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
             let time_step = 1.0 / fs;
             for (i, sample) in device_data.ecg.samples.iter().enumerate() {
                 time_vec.push((i as f64) * time_step);
-                ch1_vec.push(*sample.get(0).unwrap_or(&0.0));
+                ch1_vec.push(*sample.first().unwrap_or(&0.0));
                 ch2_vec.push(*sample.get(1).unwrap_or(&0.0));
                 ch3_vec.push(*sample.get(2).unwrap_or(&0.0));
             }
