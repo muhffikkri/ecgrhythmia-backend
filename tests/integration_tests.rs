@@ -50,6 +50,7 @@ async fn setup_test_state() -> Option<(
         pool,
         mqtt_clients,
         clients: ecg_backend::network::websocket::ClientList::default(),
+        latest_frame: ecg_backend::network::websocket::LatestFrame::default(),
         pacer_tx,
         db_tx,
         jwt_secret: "test_jwt_secret_key_extremely_long_and_secure".to_string(),
@@ -72,7 +73,8 @@ async fn test_pacer_streaming() {
         lock.push(ws_tx);
     }
 
-    let pacer_tx = ecg_backend::network::pacer::start_pacer(clients);
+    let latest_frame = ecg_backend::network::websocket::LatestFrame::default();
+    let pacer_tx = ecg_backend::network::pacer::start_pacer(clients, latest_frame);
 
     let payload = DevicePayload {
         message_id: "pacer_msg_001".to_string(),

@@ -56,11 +56,12 @@ async fn main() {
     }
     info!("Auto-migrations database PostgreSQL selesai (best-effort).");
 
-    // 4. Buat daftar klien WebSocket (ClientList) asinkron yang thread-safe
+    // 4. Buat daftar klien WebSocket dan cache frame terbaru
     let clients = network::websocket::ClientList::default();
+    let latest_frame = network::websocket::LatestFrame::default();
 
     // 5. Jalankan Pacer asinkron (pemotongan data EKG & forward ke WebSocket)
-    let pacer_tx = network::pacer::start_pacer(clients.clone());
+    let pacer_tx = network::pacer::start_pacer(clients.clone(), latest_frame.clone());
 
     // 6. Jalankan Background Database Worker untuk menulis data asinkron
     let db_tx = db::postgres::start_db_worker(pool.clone(), pacer_tx.clone());
@@ -82,6 +83,7 @@ async fn main() {
 
                 let db_tx_clone = db_tx.clone();
 
+                tracing::info!(device_id = %device.id, device_name = %device.name, broker = %broker, port, topic = %topic, "[TRACE STARTUP] MQTT listener dibuat untuk device");
                 let client = network::mqtt_listener::start_mqtt_listener(
                     broker,
                     port,
@@ -91,14 +93,13 @@ async fn main() {
                     move |payload_str| {
                         match serde_json::from_str::<models::device::DevicePayload>(&payload_str) {
                             Ok(device_payload) => {
-                                let _ = db_tx_clone.send(device_payload);
+                                tracing::info!(device_id = %device_payload.device_id, frame_id = %device_payload.frame_id, samples = device_payload.ecg.samples.len(), "[TRACE PARSER->DB] DevicePayload valid, masuk queue DB");
+                                if let Err(e) = db_tx_clone.send(device_payload) {
+                                    tracing::error!(error = %e, "[TRACE PARSER->DB] Queue DB gagal menerima payload");
+                                }
                             }
                             Err(e) => {
-                                tracing::error!(
-                                    "Gagal mem-parsing payload EKG dari perangkat: {}. Payload: {}",
-                                    e,
-                                    payload_str
-                                );
+                                tracing::error!(error = %e, "[TRACE PARSER->DB] Payload DevicePayload gagal diparse");
                             }
                         }
                     }
@@ -118,6 +119,7 @@ async fn main() {
         pool: pool.clone(),
         mqtt_clients: mqtt_clients.clone(),
         clients: clients.clone(),
+        latest_frame: latest_frame.clone(),
         pacer_tx: pacer_tx.clone(),
         db_tx: db_tx.clone(),
         jwt_secret: config.supabase_jwt_secret.clone(),
@@ -132,15 +134,19 @@ async fn main() {
 
     let mut app = api::routes::create_router(app_state);
 
-    // Pasang endpoint WebSocket pada root "/" dan "/ws" untuk mendukung proxy produksi
+    // Pasang endpoint WebSocket dengan cache frame terbaru untuk replay saat connect.
+    let stream_state = network::websocket::StreamState {
+        clients: clients.clone(),
+        latest_frame: latest_frame.clone(),
+    };
     app = app
         .route(
             "/",
-            axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()),
+            axum::routing::get(network::websocket::ws_handler).with_state(stream_state.clone()),
         )
         .route(
             "/ws",
-            axum::routing::get(network::websocket::ws_handler).with_state(clients.clone()),
+            axum::routing::get(network::websocket::ws_handler).with_state(stream_state),
         );
 
     // 8.5. Jalankan Loop Sinkronisasi Latar Belakang (Setiap 10 Jam)

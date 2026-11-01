@@ -5,7 +5,10 @@ use std::time::Duration;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedSender};
 use tracing::{error, info};
 
-pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
+pub fn start_pacer(
+    clients: ClientList,
+    latest_frame: crate::network::websocket::LatestFrame,
+) -> UnboundedSender<DevicePayload> {
     let (tx, mut rx) = unbounded_channel::<DevicePayload>();
 
     tokio::spawn(async move {
@@ -57,6 +60,7 @@ pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
                     ch3: ch3_vec[i..end].to_vec(),
                 };
 
+                let chunk_samples = chunk_data.ch1.len();
                 let payload = ECGDataPayload {
                     raw: chunk_data,
                     classification_result: device_data.prediction.label.clone(),
@@ -82,8 +86,13 @@ pub fn start_pacer(clients: ClientList) -> UnboundedSender<DevicePayload> {
                 };
 
                 if let Ok(json_string) = serde_json::to_string(&msg) {
+                    *latest_frame.lock().unwrap() = Some(json_string.clone());
                     let mut clients_lock = clients.lock().unwrap();
+                    let before = clients_lock.len();
                     clients_lock.retain(|sender| sender.send(json_string.clone()).is_ok());
+                    info!(device_id = %device_data.device_id, frame_id = %device_data.frame_id, clients_before = before, clients_after = clients_lock.len(), samples = chunk_samples, "[TRACE PACER->WS] Chunk broadcast");
+                } else {
+                    error!(device_id = %device_data.device_id, "[TRACE PACER->WS] Serialisasi ServerMessage gagal");
                 }
 
                 tokio::time::sleep(sleep_duration).await;

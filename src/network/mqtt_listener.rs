@@ -52,6 +52,7 @@ where
         for notification in connection.iter() {
             match notification {
                 Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                    info!(topic = %topic_name, "[TRACE MQTT 01] Broker connection established");
                     info!("Berhasil terhubung secara riil ke Broker HiveMQ Cloud!");
                     // Resubscribe every time connection is established
                     if let Err(e) = client_clone.subscribe(&topic_name, QoS::AtLeastOnce) {
@@ -59,15 +60,18 @@ where
                     }
                 }
                 Ok(Event::Incoming(Packet::SubAck(_))) => {
+                    info!(topic = %topic_name, "[TRACE MQTT 02] Subscription acknowledged");
                     info!(topic = %topic_name, "Berhasil berlangganan secara resmi ke topik");
                 }
                 Ok(Event::Incoming(Packet::Publish(publish))) => {
+                    info!(topic = %publish.topic, payload_bytes = publish.payload.len(), "[TRACE MQTT->PARSER] Paket MQTT diterima");
                     if let Ok(payload_str) = String::from_utf8(publish.payload.to_vec()) {
-                        if serde_json::from_str::<serde_json::Value>(&payload_str).is_err() {
-                            info!("Menerima paket sensor EKG (Invalid JSON format)");
+                        if let Err(e) = serde_json::from_str::<serde_json::Value>(&payload_str) {
+                            warn!(error = %e, topic = %publish.topic, "[TRACE MQTT->PARSER] Payload bukan JSON valid");
+                        } else {
+                            info!(topic = %publish.topic, "[TRACE MQTT->PARSER] JSON valid, kirim ke DevicePayload parser");
                         }
 
-                        // Teruskan pesan JSON murni ke callback WebSocket
                         on_message(payload_str);
                     } else {
                         info!(

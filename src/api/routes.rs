@@ -30,6 +30,7 @@ pub struct AppState {
     pub pool: PgPool,
     pub mqtt_clients: std::sync::Arc<tokio::sync::RwLock<HashMap<String, rumqttc::Client>>>,
     pub clients: crate::network::websocket::ClientList,
+    pub latest_frame: crate::network::websocket::LatestFrame,
     pub pacer_tx: tokio::sync::mpsc::UnboundedSender<crate::models::device::DevicePayload>,
     pub db_tx: tokio::sync::mpsc::UnboundedSender<crate::models::device::DevicePayload>,
     pub jwt_secret: String,
@@ -1319,13 +1320,36 @@ async fn device_command_handler(
     Json(cmd): Json<DeviceCommand>,
 ) -> impl IntoResponse {
     let command = cmd.command.to_uppercase();
-    let patient_id = cmd.patient_id.clone().or({
-        // resolve patient from device assignment requires async; handle below
+    let patient_id = if let Some(request_patient_id) = cmd.patient_id.clone() {
+        match sqlx::query!(
+            "SELECT id FROM patients WHERE id = $1 OR account_id = $1 LIMIT 1",
+            request_patient_id
+        )
+        .fetch_optional(&state.pool)
+        .await
+        {
+            Ok(Some(patient)) => {
+                info!(request_patient_id = %request_patient_id, patient_id = %patient.id, "[TRACE SESSION 01] Patient ID berhasil di-resolve");
+                Some(patient.id)
+            }
+            Ok(None) => {
+                error!(request_patient_id = %request_patient_id, "[TRACE SESSION 01] Patient ID tidak ditemukan di patients.id/account_id");
+                None
+            }
+            Err(e) => {
+                error!(request_patient_id = %request_patient_id, error = %e, "[TRACE SESSION 01] Gagal resolve Patient ID");
+                None
+            }
+        }
+    } else {
         None
-    });
+    };
+
+    info!(device_id = %device_id, command = %command, patient_id = ?patient_id, "[TRACE 01 COMMAND] Request command diterima");
 
     if command == "START" {
-        info!(device_id = %device_id, "Perekaman Dimulai");
+        info!(device_id = %device_id, patient_id = ?patient_id, "[TRACE 02 COMMAND] START mulai diproses");
+        *state.latest_frame.lock().unwrap() = None;
 
         // Buat session baru secara proaktif di database saat START
         if let Ok(record) = sqlx::query!(
@@ -1340,15 +1364,15 @@ async fn device_command_handler(
             let initial_file_path = format!("records/{}.jsonl", new_id);
             let now = chrono::Utc::now();
 
-            let resolved_patient = cmd.patient_id.clone().or({
-                // Best-effort: find the patient currently assigned to this device
-                None
-            });
+            let resolved_patient = patient_id.clone();
 
-            let _ = sqlx::query!(
+            match sqlx::query!(
                 "INSERT INTO sessions (id, device_id, patient_id, started_at, file_path) VALUES ($1, $2, $3, $4, $5)",
                 new_id, record.id, resolved_patient, now, initial_file_path
-            ).execute(&state.pool).await;
+            ).execute(&state.pool).await {
+                Ok(_) => info!(device_id = %device_id, "[TRACE 03 SESSION] Session aktif berhasil dibuat"),
+                Err(e) => error!(device_id = %device_id, error = %e, "[TRACE 03 SESSION] Gagal membuat session aktif"),
+            }
         }
     } else if cmd.command.to_uppercase() == "STOP" {
         info!(device_id = %device_id, "Perekaman Selesai");

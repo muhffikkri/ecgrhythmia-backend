@@ -258,6 +258,7 @@ pub fn start_db_worker(
         let mut session_frame_counts: HashMap<String, i64> = HashMap::new();
 
         while let Some(mut payload) = rx.recv().await {
+            info!(device_id = %payload.device_id, frame_id = %payload.frame_id, samples = payload.ecg.samples.len(), "[TRACE DB QUEUE] Payload diterima worker DB");
             // 1. Dapatkan atau buat device ID internal
             let dev_id = if let Some(id) = device_map.get(&payload.device_id) {
                 id.clone()
@@ -270,6 +271,7 @@ pub fn start_db_worker(
 
                 match dev_res {
                     Ok(record) => {
+                        info!(device_name = %payload.device_id, device_id = %record.id, "[TRACE DB 01] Device berhasil di-resolve");
                         device_map.insert(payload.device_id.clone(), record.id.clone());
                         record.id
                     }
@@ -301,7 +303,7 @@ pub fn start_db_worker(
             let ses_id = match ses_res {
                 Ok(Some(record)) => record.id,
                 _ => {
-                    // Jika tidak ada sesi aktif, buang payload!
+                    error!(device_id = %payload.device_id, "[TRACE DB->PACER] Sesi aktif tidak ditemukan, payload dibuang");
                     continue;
                 }
             };
@@ -397,7 +399,12 @@ pub fn start_db_worker(
                 frame_db_id, ses_id, time_interval, start_sec, end_sec, best_label
             ).execute(&pool).await;
 
-            let _ = pacer_tx.send(payload);
+            let sent_payload = payload.clone();
+            if let Err(e) = pacer_tx.send(payload) {
+                error!(error = %e, "[TRACE DB->PACER] Queue pacer gagal menerima payload");
+            } else {
+                info!(device_id = %sent_payload.device_id, frame_id = %sent_payload.frame_id, "[TRACE DB->PACER] Payload diteruskan ke pacer");
+            }
         }
     });
 
