@@ -24,7 +24,7 @@ jobs:
         run: |
           set -e
           # StrictHostKeyChecking=no: tanpa interaksi di runner (host key tak dikenal di run pertama).
-          export SSH_OPTS="-o StrictHostKeyChecking=no"
+          export SSH_OPTS="-o StrictHostKeyChecking=no -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes -o ConnectTimeout=30"
           # --- backend: fetch + build di VPS, pakai cache offline .sqlx/ (tanpa DB) ---
           ssh $SSH_OPTS "$VPS_USER@$VPS_HOST" "set -e
             cd '$BACKEND_DIR'
