@@ -1322,7 +1322,7 @@ async fn device_command_handler(
     let command = cmd.command.to_uppercase();
     let patient_id = if let Some(request_patient_id) = cmd.patient_id.clone() {
         match sqlx::query!(
-            "SELECT id FROM patients WHERE id = $1 OR account_id = $1 LIMIT 1",
+            "SELECT id FROM patients WHERE id = $1 OR account_id = $1",
             request_patient_id
         )
         .fetch_optional(&state.pool)
