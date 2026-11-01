@@ -30,9 +30,9 @@ where
     let client_id = format!("rust_ecg_bridge_{}", timestamp);
 
     let mut mqttoptions = MqttOptions::new(&client_id, &host, broker_port);
-    mqttoptions.set_keep_alive(Duration::from_secs(60));
+    mqttoptions.set_keep_alive(Duration::from_secs(180));
     // Perbesar limit ukuran payload hingga 10MB agar tidak error "payload size limit exceeded"
-    mqttoptions.set_max_packet_size(10 * 1024 * 1024, 10 * 1024 * 1024);
+    mqttoptions.set_max_packet_size(10 * 1024 * 1024 * 1024, 10 * 1024 * 1024 * 1024);
 
     // --- ADDED CREDENTIALS & TLS FOR HIVEMQ CLOUD ---
     mqttoptions.set_credentials(username, password);
